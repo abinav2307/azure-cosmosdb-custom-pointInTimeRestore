@@ -3,17 +3,15 @@ namespace Microsoft.CosmosDB.PITRWithRestore.Backup
 {
     using System;
     using System.Collections.ObjectModel;
-    using System.Collections.Generic;
     using System.Configuration;
-    using System.Linq;
-    using System.Text;
     using System.Threading.Tasks;
 
     using Microsoft.Azure.Documents.Client;
     using Microsoft.Azure.Documents.ChangeFeedProcessor;
     using Microsoft.Azure.Documents;
+    using Microsoft.CosmosDB.PITRWithRestore.CosmosDB;
 
-    internal sealed class BackupExecutor
+    public class BackupExecutor
     {
         /// <summary>
         /// Instance of the DocumentClient, used to push failed batches of backups to the Cosmos DB collection
@@ -43,11 +41,9 @@ namespace Microsoft.CosmosDB.PITRWithRestore.Backup
             string leaseDbName = ConfigurationManager.AppSettings["leaseDbName"];
             string leaseCollectionName = ConfigurationManager.AppSettings["leaseCollectionName"];
             int leaseThroughput = int.Parse(ConfigurationManager.AppSettings["leaseThroughput"]);
+            string leaseCollectionPartitionKey = ConfigurationManager.AppSettings["leaseCollectionPartitionKey"];
 
-            await this.CreateCollectionIfNotExistsAsync(
-                leaseDbName,
-                leaseCollectionName,
-                leaseThroughput);
+            await CosmosDBHelper.CreateCollectionIfNotExistsAsync(this.DocumentClient, leaseDbName, leaseCollectionName, leaseThroughput, leaseCollectionPartitionKey);
 
             await this.RunChangeFeedHostAsync();
         }
@@ -60,12 +56,11 @@ namespace Microsoft.CosmosDB.PITRWithRestore.Backup
         /// <returns>A Task to allow asynchronous execution</returns>
         private async Task RunChangeFeedHostAsync()
         {
-            string monitoredUri = ConfigurationManager.AppSettings["monitoredUri"];
-            string monitoredSecretKey = ConfigurationManager.AppSettings["monitoredSecretKey"];
-            string monitoredDbName = ConfigurationManager.AppSettings["monitoredDbName"];
-            string monitoredCollectionName = ConfigurationManager.AppSettings["monitoredCollectionName"];
-            int monitoredThroughput = int.Parse(ConfigurationManager.AppSettings["monitoredThroughput"]);
-
+            string monitoredUri = ConfigurationManager.AppSettings["CosmosDBEndpointUri"];
+            string monitoredSecretKey = ConfigurationManager.AppSettings["CosmosDBAuthKey"];
+            string monitoredDbName = ConfigurationManager.AppSettings["DatabaseName"];
+            string monitoredCollectionName = ConfigurationManager.AppSettings["CollectionName"];
+            
             // Source collection to be monitored for changes
             DocumentCollectionInfo documentCollectionInfo = new DocumentCollectionInfo
             {
@@ -79,9 +74,8 @@ namespace Microsoft.CosmosDB.PITRWithRestore.Backup
             string leaseSecretKey = ConfigurationManager.AppSettings["leaseSecretKey"];
             string leaseDbName = ConfigurationManager.AppSettings["leaseDbName"];
             string leaseCollectionName = ConfigurationManager.AppSettings["leaseCollectionName"];
-            int leaseThroughput = int.Parse(ConfigurationManager.AppSettings["leaseThroughput"]);
-
-            // Lease Collection managing leases on each of the underlying shards of the source collection
+            
+            // Lease Collection managing leases on each of the underlying shards of the source collection being monitored
             DocumentCollectionInfo leaseCollectionInfo = new DocumentCollectionInfo
             {
                 Uri = new Uri(leaseUri),
@@ -95,7 +89,7 @@ namespace Microsoft.CosmosDB.PITRWithRestore.Backup
 
             feedProcessorOptions.LeaseRenewInterval = TimeSpan.FromSeconds(240);
             feedProcessorOptions.LeaseExpirationInterval = TimeSpan.FromSeconds(240);
-            feedProcessorOptions.FeedPollDelay = TimeSpan.FromMilliseconds(1);
+            feedProcessorOptions.FeedPollDelay = TimeSpan.FromMilliseconds(60*1000);
             feedProcessorOptions.StartFromBeginning = true;
             feedProcessorOptions.MaxItemCount = 2000;
 
@@ -109,40 +103,6 @@ namespace Microsoft.CosmosDB.PITRWithRestore.Backup
 
             var result = await builder.BuildAsync();
             await result.StartAsync().ConfigureAwait(false);
-        }
-
-        /// <summary>
-        /// Checks whether a collections exists. Creates a new collection if
-        /// the collection does not exist.
-        /// <para>WARNING: CreateCollectionIfNotExistsAsync will create a
-        /// new collection with reserved throughput which has pricing
-        /// implications. For details visit:
-        /// https://azure.microsoft.com/en-us/pricing/details/cosmos-db/
-        /// </para>
-        /// </summary>
-        /// <param name="databaseName">Name of database </param>
-        /// <param name="collectionName">Name of collection</param>
-        /// <param name="throughput">Amount of throughput to provision</param>
-        /// <returns>A Task to allow asynchronous execution</returns>
-        private async Task CreateCollectionIfNotExistsAsync(string databaseName, string collectionName, int throughput)
-        {
-            await this.DocumentClient.CreateDatabaseIfNotExistsAsync(new Database { Id = databaseName });
-
-            PartitionKeyDefinition pkDefn = null;
-
-            Collection<string> paths = new Collection<string>();
-            paths.Add("/id");
-            pkDefn = new PartitionKeyDefinition() { Paths = paths };
-
-            // create collection if it does not exist
-            // WARNING: CreateDocumentCollectionIfNotExistsAsync will
-            // create a new collection with reserved throughput which
-            // has pricing implications. For details visit:
-            // https://azure.microsoft.com/en-us/pricing/details/cosmos-db/
-            await this.DocumentClient.CreateDocumentCollectionIfNotExistsAsync(
-                UriFactory.CreateDatabaseUri(databaseName),
-                new DocumentCollection { Id = collectionName },
-                new RequestOptions { OfferThroughput = throughput });
         }
     }
 }

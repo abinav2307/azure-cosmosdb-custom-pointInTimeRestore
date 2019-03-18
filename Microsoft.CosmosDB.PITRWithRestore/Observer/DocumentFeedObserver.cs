@@ -6,7 +6,6 @@ namespace Microsoft.CosmosDB.PITRWithRestore
     using System.Configuration;
     using System.Threading;
     using System.Threading.Tasks;
-    using System.Linq;
     using System.Text;
     using System.IO;
     using System.IO.Compression;
@@ -14,12 +13,10 @@ namespace Microsoft.CosmosDB.PITRWithRestore
     using Microsoft.Azure.Documents;
     using Microsoft.Azure.Documents.Client;
     using Microsoft.Azure.Documents.ChangeFeedProcessor.FeedProcessing;
-    using Microsoft.WindowsAzure.Storage;
     using Microsoft.WindowsAzure.Storage.Blob;
-    using Microsoft.WindowsAzure.Storage.Table;
-    using Microsoft.WindowsAzure.Storage.Auth;
+    using Microsoft.CosmosDB.PITRWithRestore.BlobStorage;
+    using Microsoft.CosmosDB.PITRWithRestore.CosmosDB;
 
-    using Newtonsoft.Json;
     using Newtonsoft.Json.Linq;
 
     /// <summary>
@@ -101,63 +98,30 @@ namespace Microsoft.CosmosDB.PITRWithRestore
         /// efficient storage into Blob Storage</param>
         private void WriteCompressedDataToBlob(string partitionId, string fileName, IReadOnlyList<Document> docs, byte[] compressedByteArray)
         {
-            Console.WriteLine("Retrieved {0} documents from ChangeFeed for partitionid: {1}", docs.Count, partitionId);
+            Console.WriteLine("Retrieved {0} documents from ChangeFeed", docs.Count);
 
-            //string containerName = DocumentFeedObserver.Hash(string.Concat("partition-", partitionId)).ToString();
-            string containerName = string.Concat("partition-", partitionId);
+            string containerName = string.Concat("backup-", partitionId);
 
             CloudBlobContainer cloudBlobContainer = this.CloudBlobClient.GetContainerReference(containerName);
-            cloudBlobContainer.CreateIfNotExists();
 
+            // Check for Conflict
+            if(!cloudBlobContainer.Exists())
+            {
+                cloudBlobContainer.CreateIfNotExists();
+            }
+            
             CloudBlockBlob blockBlob = cloudBlobContainer.GetBlockBlobReference(fileName);
+            if(blockBlob.Exists())
+            {
+                fileName = string.Concat(fileName, "-", Guid.NewGuid());
+                blockBlob = cloudBlobContainer.GetBlockBlobReference(fileName);
+            }
             try
             {
-                blockBlob.UploadFromByteArray(compressedByteArray, 0, compressedByteArray.Length);
-                Console.WriteLine("Successfully wrote blob to Storage Account");
-            }
-            catch (StorageException ex)
-            {
-                int exceptionStatusCode = ex.RequestInformation.HttpStatusCode;
-
-                // Throttling exception - implement custom exponential backoff retry logic for 10 retries
-                if (exceptionStatusCode == 500 || exceptionStatusCode == 503)
+                bool isBackupToBlobStorageSuccess = BlobStorageHelper.WriteToBlobStorage(blockBlob, compressedByteArray, this.MaxRetriesOnRateLimitedWritesToBlobAccount);
+                if(!isBackupToBlobStorageSuccess)
                 {
-                    int retryWaitTime = 1;
-                    int retryCount = 1;
-                    bool retrySucceeded = false;
-
-                    // Custom exponential backoff-retry logic when rate limited by Azure Blob Storage
-                    while (!retrySucceeded && retryCount <= this.MaxRetriesOnRateLimitedWritesToBlobAccount)
-                    {
-                        Thread.Sleep(retryWaitTime * 1000);
-                        try
-                        {
-                            blockBlob.UploadFromByteArray(compressedByteArray, 0, compressedByteArray.Length);
-                            retrySucceeded = true;
-                        }
-                        catch (StorageException ie)
-                        {
-                            // Throttling exception - continue with custom exponential backoff retry logic for 10 retries
-                            if (ie.RequestInformation.HttpStatusCode == 500 || ie.RequestInformation.HttpStatusCode == 503)
-                            {
-                                retryWaitTime *= 2;                                
-                            }
-                        }
-                        catch (Exception iex)
-                        {
-                            
-                        }
-                        finally
-                        {
-                            retryCount++;
-                        }
-                    }
-
-                    if( !retrySucceeded)
-                    {
-                        // Push failed batches of backups to Blob Storage, into the Cosmos DB collection tracking failures
-                        this.TrackFailedBatchesOfBackups(docs);
-                    }
+                    this.TrackFailedBatchesOfBackups(docs);
                 }
             }
             catch (Exception e)
@@ -177,14 +141,16 @@ namespace Microsoft.CosmosDB.PITRWithRestore
         {
             Console.WriteLine("Tracking failed backups to Cosmos DB collecion tracking failures during backup process");
 
-            string restoreSuccessFailureDatabaseName = ConfigurationManager.AppSettings["BackupFailureDatabaseName"];
-            string restoreSuccessFailureCollectionName = ConfigurationManager.AppSettings["BackupFailureCollectioneName"];
-            Uri documentsFeedLink = UriFactory.CreateDocumentCollectionUri(restoreSuccessFailureDatabaseName, restoreSuccessFailureCollectionName);
+            string backupFailureDatabaseName = ConfigurationManager.AppSettings["BackupFailureDatabaseName"];
+            string backupFailureCollectionName = ConfigurationManager.AppSettings["BackupFailureCollectionName"];
+            Uri documentsFeedLink = UriFactory.CreateDocumentCollectionUri(backupFailureDatabaseName, backupFailureCollectionName);
 
-            Parallel.ForEach(docs, new ParallelOptions { MaxDegreeOfParallelism = 20 }, async eachDocument => 
-            {
-                await this.DocumentClient.CreateDocumentAsync(documentsFeedLink, eachDocument);
-            });
+            CosmosDBHelper.WriteDocumentsToCosmosDB(
+                this.DocumentClient,
+                backupFailureDatabaseName,
+                backupFailureCollectionName, 
+                docs, 
+                this.MaxRetriesOnRateLimitedWritesToBlobAccount).Wait();
         }
 
         /// <summary>
@@ -234,7 +200,9 @@ namespace Microsoft.CosmosDB.PITRWithRestore
             string fileName = string.Concat(
                 minTimeStamp.ToString("yyyyMMddTHH:mm:ss"), 
                 "-", 
-                maxTimeStamp.ToString("yyyyMMddTHH:mm:ss"));
+                maxTimeStamp.ToString("yyyyMMddTHH:mm:ss"),
+                "-",
+                docs.Count);
 
             // 4. Write the compressed data to blob storage
             // Container name is the Partition's Id
@@ -242,11 +210,6 @@ namespace Microsoft.CosmosDB.PITRWithRestore
             this.WriteCompressedDataToBlob(partitionKeyRangeId, fileName, docs, bytes);
 
             Console.WriteLine("Successfully write compressed file to blob account with name: {0}", fileName);
-        }
-
-        public static int Hash (string x)
-        {
-            return x.GetHashCode();
-        }        
+        }    
     }
 }
