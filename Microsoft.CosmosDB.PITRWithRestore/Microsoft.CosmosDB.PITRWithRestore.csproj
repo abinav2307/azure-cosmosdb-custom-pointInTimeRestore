@@ -52,6 +52,15 @@
       <HintPath>..\packages\Microsoft.Azure.KeyVault.Core.3.0.1\lib\net452\Microsoft.Azure.KeyVault.Core.dll</HintPath>
       <Private>True</Private>
     </Reference>
+    <Reference Include="Microsoft.UnitTestFramework.Extensions, Version=2.0.0.0, Culture=neutral, PublicKeyToken=5bf63060baa03a11, processorArchitecture=MSIL">
+      <HintPath>..\Microsoft.CosmosDB.PITRWithRestoreTest\packages\Microsoft.UnitTestFramework.Extensions.2.0.0\lib\net45\Microsoft.UnitTestFramework.Extensions.dll</HintPath>
+    </Reference>
+    <Reference Include="Microsoft.VisualStudio.TestPlatform.TestFramework, Version=14.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a, processorArchitecture=MSIL">
+      <HintPath>..\Microsoft.CosmosDB.PITRWithRestoreTest\packages\MSTest.TestFramework.1.1.17\lib\net45\Microsoft.VisualStudio.TestPlatform.TestFramework.dll</HintPath>
+    </Reference>
+    <Reference Include="Microsoft.VisualStudio.TestPlatform.TestFramework.Extensions, Version=14.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a, processorArchitecture=MSIL">
+      <HintPath>..\Microsoft.CosmosDB.PITRWithRestoreTest\packages\MSTest.TestFramework.1.1.17\lib\net45\Microsoft.VisualStudio.TestPlatform.TestFramework.Extensions.dll</HintPath>
+    </Reference>
     <Reference Include="Microsoft.WindowsAzure.Storage, Version=9.3.2.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35, processorArchitecture=MSIL">
       <HintPath>..\packages\WindowsAzure.Storage.9.3.3\lib\net45\Microsoft.WindowsAzure.Storage.dll</HintPath>
       <Private>True</Private>
@@ -84,11 +93,13 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="Backup\BackupExecutor.cs" />
+    <Compile Include="BlobStorage\BlobStorageHelper.cs" />
+    <Compile Include="CosmosDB\CosmosDBHelper.cs" />
     <Compile Include="Observer\DocumentFeedObserver.cs" />
     <Compile Include="Program.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
     <Compile Include="Observer\DocumentFeedObserverFactory.cs" />
-    <Compile Include="Restore\BlobRestoreSuccessDocument.cs" />
+    <Compile Include="Restore\BlobRestoreStatusDocument.cs" />
     <Compile Include="Restore\RestoreExecutor.cs" />
     <Compile Include="Restore\RestoreContainerDocument.cs" />
   </ItemGroup>

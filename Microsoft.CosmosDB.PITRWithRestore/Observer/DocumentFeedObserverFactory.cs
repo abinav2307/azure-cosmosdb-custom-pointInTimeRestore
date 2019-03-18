@@ -2,19 +2,14 @@
 namespace Microsoft.CosmosDB.PITRWithRestore
 {
     using System;
-    using System.Collections.Generic;
     using System.Configuration;
-    using System.Linq;
-    using System.Text;
-    using System.Threading.Tasks;
-
+    
     using Microsoft.Azure.Documents.Client;
     using Microsoft.Azure.Documents.ChangeFeedProcessor.FeedProcessing;
 
     using Microsoft.WindowsAzure.Storage;
     using Microsoft.WindowsAzure.Storage.Blob;
-    using Microsoft.WindowsAzure.Storage.Table;
-    using Microsoft.WindowsAzure.Storage.Auth;
+    using Microsoft.CosmosDB.PITRWithRestore.CosmosDB;
 
     /// <summary>
     /// Factory class to create instance of document feed observer.
@@ -48,11 +43,11 @@ namespace Microsoft.CosmosDB.PITRWithRestore
             // in an environment variable on the machine running the application called storageconnectionstring.
             // If the environment variable is created after the application is launched in a console or with Visual
             // Studio, the shell or application needs to be closed and reloaded to take the environment variable into account.
-            string storageConnectionString = ConfigurationManager.AppSettings["blobStorageConnectionString"];
+            string storageConnectionString = ConfigurationManager.AppSettings["BlobStorageConnectionString"];
 
             this.DocumentClient = client;
 
-            // Check whether the connection string can be parsed.
+            // Ensure the connection string can be parsed.
             if (CloudStorageAccount.TryParse(storageConnectionString, out this.StorageAccount))
             {
                 this.CloudBlobClient = this.StorageAccount.CreateCloudBlobClient();
@@ -63,10 +58,23 @@ namespace Microsoft.CosmosDB.PITRWithRestore
                 Console.WriteLine("The connection string for the Blob Storage Account is invalid. ");
                 Console.ReadLine();
             }
+
+            string backupFailureDatabaseName = ConfigurationManager.AppSettings["BackupFailureDatabaseName"];
+            string backupFailureCollectionName = ConfigurationManager.AppSettings["BackupFailureCollectionName"];
+            int backupFailureCollectionThroughput = int.Parse(ConfigurationManager.AppSettings["BackupFailureCollectionThroughput"]);
+            string backupFailureCollectionPartitionKey = ConfigurationManager.AppSettings["BackupFailureCollectionPartitionKey"];
+
+            // Create collection to track backup failures
+            CosmosDBHelper.CreateCollectionIfNotExistsAsync(
+                this.DocumentClient, 
+                backupFailureDatabaseName, 
+                backupFailureCollectionName, 
+                backupFailureCollectionThroughput, 
+                backupFailureCollectionPartitionKey).Wait();
         }
 
         /// <summary>
-        /// Creates a document observer instance.
+        /// Creates a document observer instance which receives the modified documents to be backed up in the Azure Blob Storage account.
         /// </summary>
         /// <returns>A new DocumentFeedObserver instance.</returns>
         public IChangeFeedObserver CreateObserver()

@@ -6,9 +6,8 @@ namespace Microsoft.CosmosDB.PITRWithRestore.Restore
 
     using Microsoft.WindowsAzure.Storage;
     using Microsoft.WindowsAzure.Storage.Blob;
-    using Microsoft.WindowsAzure.Storage.Table;
-    using Microsoft.WindowsAzure.Storage.Auth;
-
+    using Microsoft.CosmosDB.PITRWithRestore.CosmosDB;
+    using Microsoft.CosmosDB.PITRWithRestore.BlobStorage;
     using Newtonsoft.Json;
     using Newtonsoft.Json.Linq;
 
@@ -18,18 +17,16 @@ namespace Microsoft.CosmosDB.PITRWithRestore.Restore
     using System.Globalization;
     using System.IO;
     using System.IO.Compression;
-    using System.Linq;
     using System.Text;
-    using System.Threading;
     using System.Threading.Tasks;
 
-    internal sealed class RestoreExecutor
+    public class RestoreExecutor
     {
         /// <summary>
         /// CloudStorageAccount instance retrieved after successfully establishing a connection to the specified Blob Storage Account,
         /// into which created and updated documents will be backed up
         /// </summary>
-        private CloudStorageAccount storageAccount;
+        private CloudStorageAccount StorageAccount;
 
         /// <summary>
         /// CloudBlobClient instance used to read backups from the specified Blob Storage Account
@@ -74,9 +71,9 @@ namespace Microsoft.CosmosDB.PITRWithRestore.Restore
             string storageConnectionString = ConfigurationManager.AppSettings["blobStorageConnectionString"];
 
             // Verify the Blob Storage Connection String
-            if (CloudStorageAccount.TryParse(storageConnectionString, out this.storageAccount))
+            if (CloudStorageAccount.TryParse(storageConnectionString, out this.StorageAccount))
             {
-                this.CloudBlobClient = storageAccount.CreateCloudBlobClient();
+                this.CloudBlobClient = this.StorageAccount.CreateCloudBlobClient();
             }
             else
             {
@@ -84,7 +81,70 @@ namespace Microsoft.CosmosDB.PITRWithRestore.Restore
                 throw new ArgumentException("The connection string for the Blob Storage Account is invalid. ");
             }
 
+            this.CreateCollectionsForRestore();
+
             this.ExtractStartAndEndTimeForRestore();
+        }
+
+        /// <summary>
+        /// Create the following collections if they don't already exist:
+        /// 1. RestoreCollection        - Cosmos DB collection into which backup blobs will be restored
+        /// 2. RestoreHelperCollection  - Cosmos DB collection keeping track of blob containers being restored by host machine(s)
+        /// 3. RestoreSuccessCollection - Cosmos DB collection keeping track of successfully restored blob files. This collection
+        ///                               will be read from if a restore host machine dies and another machine picks up restoring
+        ///                               backups from where the dead machine stopped
+        /// 4. RestoreFailureCollection - Cosmos DB collection containing blobs which could not successfully be restored 
+        ///                               to the RestoreCollection in (1)
+        /// </summary>
+        private void CreateCollectionsForRestore()
+        {
+            // 1. Create the RestoreHelper collection
+            string restoreHelperDatabaseName = ConfigurationManager.AppSettings["RestoreHelperDatabaseName"];
+            string restoreHelperCollectionName = ConfigurationManager.AppSettings["RestoreHelperCollectionName"];
+            int restoreHelperCollectionThroughput = int.Parse(ConfigurationManager.AppSettings["RestoreHelperCollectionThroughput"]);
+            string restoreHelperCollectionPartitionKey = ConfigurationManager.AppSettings["RestoreHelperCollectionPartitionKey"];
+            CosmosDBHelper.CreateCollectionIfNotExistsAsync(
+                this.DocumentClient,
+                restoreHelperDatabaseName,
+                restoreHelperCollectionName,
+                restoreHelperCollectionThroughput,
+                restoreHelperCollectionPartitionKey).Wait();
+
+            // 2. Create the Restore collection, which will contain the restored documents
+            string restoreDatabaseName = ConfigurationManager.AppSettings["RestoreDatabaseName"];
+            string restoreCollectionName = ConfigurationManager.AppSettings["RestoreCollectionName"];
+            int restoreCollectionThroughput = int.Parse(ConfigurationManager.AppSettings["RestoreCollectionThroughput"]);
+            string restoreCollectionPartitionKey = ConfigurationManager.AppSettings["RestoreCollectionPartitionKey"];
+            CosmosDBHelper.CreateCollectionIfNotExistsAsync(
+                this.DocumentClient,
+                restoreDatabaseName,
+                restoreCollectionName,
+                restoreCollectionThroughput,
+                restoreCollectionPartitionKey).Wait();
+
+            // 3. Create the Restore Success collection, containing successfully restored blob filenames
+            string restoreSuccessDatabaseName = ConfigurationManager.AppSettings["RestoreSuccessDatabaseName"];
+            string restoreSuccessCollectionName = ConfigurationManager.AppSettings["RestoreSuccessCollectionName"];
+            int restoreSuccessCollectionThroughput = int.Parse(ConfigurationManager.AppSettings["RestoreSuccessCollectionThroughput"]);
+            string restoreSuccessCollectionPartitionKey = ConfigurationManager.AppSettings["RestoreSuccessCollectionPartitionKey"];
+            CosmosDBHelper.CreateCollectionIfNotExistsAsync(
+                this.DocumentClient,
+                restoreSuccessDatabaseName,
+                restoreSuccessCollectionName,
+                restoreSuccessCollectionThroughput,
+                restoreSuccessCollectionPartitionKey).Wait();
+
+            // 4. Create the Restore Failure collection, containing blob filenames that were NOT successfully restored
+            string restoreFailureDatabaseName = ConfigurationManager.AppSettings["RestoreFailureDatabaseName"];
+            string restoreFailureCollectionName = ConfigurationManager.AppSettings["RestoreFailureCollectionName"];
+            int restoreFailureCollectionThroughput = int.Parse(ConfigurationManager.AppSettings["RestoreFailureCollectionThroughput"]);
+            string restoreFailureCollectionPartitionKey = ConfigurationManager.AppSettings["RestoreFailureCollectionPartitionKey"];
+            CosmosDBHelper.CreateCollectionIfNotExistsAsync(
+                this.DocumentClient,
+                restoreFailureDatabaseName,
+                restoreFailureCollectionName,
+                restoreFailureCollectionThroughput,
+                restoreFailureCollectionPartitionKey).Wait();
         }
 
         /// <summary>
@@ -137,7 +197,7 @@ namespace Microsoft.CosmosDB.PITRWithRestore.Restore
         public async Task ExecuteRestore()
         {
             // Fetch the list of blob containers to restore data from
-            List<string> containerNames = this.GetListOfContainersInStorageAccount();
+            List<string> containerNames = BlobStorageHelper.GetListOfContainersInStorageAccount(this.CloudBlobClient);
 
             // Determine the first Blob Storage container to acquire a lease on and restore to Cosmos DB
             string blobContainerToRestore = await GetNextContainerToRestore(containerNames);
@@ -153,6 +213,8 @@ namespace Microsoft.CosmosDB.PITRWithRestore.Restore
                 // Determine the next Blob Storage container to acquire a lease on and restore to Cosmos DB
                 blobContainerToRestore = await GetNextContainerToRestore(containerNames);
             }
+
+            Console.WriteLine("Completed executing restore on host: {0}", this.HostName);
         }
 
         /// <summary>
@@ -166,81 +228,46 @@ namespace Microsoft.CosmosDB.PITRWithRestore.Restore
         {
             string restoreHelperDatabaseName = ConfigurationManager.AppSettings["RestoreHelperDatabaseName"];
             string restoreHelperCollectionName = ConfigurationManager.AppSettings["RestoreHelperCollectionName"];
-            string documentCollectionLink = UriFactory.CreateDocumentCollectionUri(restoreHelperDatabaseName, restoreHelperCollectionName).ToString();
-
-            ResourceResponse<DocumentCollection> resourceResponse =
-                await this.DocumentClient.ReadDocumentCollectionAsync(documentCollectionLink, new RequestOptions { PopulatePartitionKeyRangeStatistics = true });
-
-            long documentCount = 0;
-            foreach (PartitionKeyRangeStatistics eachPartitionsStats in resourceResponse.Resource.PartitionKeyRangeStatistics)
-            {
-                documentCount += eachPartitionsStats.DocumentCount;
-            }
+            long documentCount = await CosmosDBHelper.FetchDocumentCountInCollection(this.DocumentClient, restoreHelperDatabaseName, restoreHelperCollectionName);
 
             return documentCount;
         }
 
         /// <summary>
         /// Restore each JObject in the input JArray into the specified Cosmos DB collection
+        /// and store the documents that were not successfully restored into a collection tracking restore failures
         /// </summary>
         /// <param name="jArray"></param>
         /// <returns></returns>
-        private async Task WriteJArrayToCosmosDB(JArray jArray)
+        private async Task<List<JObject>> WriteJArrayToCosmosDB(JArray jArray)
         {
-            string restoreHelperDatabaseName = ConfigurationManager.AppSettings["RestoreHelperDatabaseName"];
-            string restoreHelperCollectionName = ConfigurationManager.AppSettings["RestoreCollectionName"];
-            Uri documentsFeedLink = UriFactory.CreateDocumentCollectionUri(restoreHelperDatabaseName, restoreHelperCollectionName);
+            string restoreDatabaseName = ConfigurationManager.AppSettings["RestoreDatabaseName"];
+            string restoreCollectionName = ConfigurationManager.AppSettings["RestoreCollectionName"];
+            Uri documentsFeedLink = UriFactory.CreateDocumentCollectionUri(restoreDatabaseName, restoreCollectionName);
 
             int countOfDocumentsWritten = 0;
-            int numRetries = 0;
 
+            List<JObject> documentsFailedToRestore = new List<JObject>();
             foreach (JObject eachJObject in jArray)
             {
                 if (VerifyTimeRangeForDocumentRestore(eachJObject))
                 {
                     try
                     {
-                        await this.DocumentClient.UpsertDocumentAsync(
-                            documentsFeedLink,
-                            eachJObject,
-                            null,
-                            true);
+                        ResourceResponse<Document> upsertedDocument = await CosmosDBHelper.UpsertDocumentAsync(
+                            this.DocumentClient, 
+                            restoreDatabaseName,
+                            restoreCollectionName, 
+                            eachJObject, 
+                            this.MaxRetriesOnDocumentClientExceptions);
 
-                        countOfDocumentsWritten++;
-                    }
-                    catch (DocumentClientException ex)
-                    {
-                        // Keep retrying when rate limited
-                        if ((int)ex.StatusCode == 429)
+                        if(upsertedDocument != null)
                         {
-                            Console.WriteLine("Received rate limiting exception when attempting to restore document. Retrying");
-
-                            // If the write is rate limited, wait for twice the recommended wait time specified in the exception
-                            int sleepTime = (int)ex.RetryAfter.TotalMilliseconds * 2;
-
-                            bool success = false;
-                            while (!success && numRetries <= this.MaxRetriesOnDocumentClientExceptions)
-                            {
-                                // Sleep for twice the recommended amount from the Cosmos DB rate limiting exception
-                                Thread.Sleep(sleepTime);
-
-                                try
-                                {
-                                    await this.DocumentClient.UpsertDocumentAsync(documentsFeedLink, eachJObject, null, true);
-                                    success = true;
-                                    countOfDocumentsWritten++;
-                                }
-                                catch (DocumentClientException e)
-                                {
-                                    sleepTime = (int)e.RetryAfter.TotalMilliseconds * 2;
-                                    numRetries++;
-                                }
-                                catch (Exception exception)
-                                {
-                                    Console.WriteLine("Caught Exception when retrying. Exception was: {0}. Will continue to retry.", exception.Message);
-                                    numRetries++;
-                                }
-                            }
+                            countOfDocumentsWritten++;
+                        }
+                        else
+                        {
+                            documentsFailedToRestore.Add(eachJObject);
                         }
                     }
                     catch (Exception e)
@@ -255,6 +282,8 @@ namespace Microsoft.CosmosDB.PITRWithRestore.Restore
 
                 Console.WriteLine("Completed restoring {0}", countOfDocumentsWritten);
             }
+
+            return documentsFailedToRestore;
         }
 
         /// <summary>
@@ -281,7 +310,7 @@ namespace Microsoft.CosmosDB.PITRWithRestore.Restore
         /// and restores the backed up documents into a new Cosmos DB collection
         /// </summary>
         /// <param name="containerName">Randomly determined containers to pull down from the Azure Blob Storage account</param>
-        /// <param name="blobName"></param>
+        /// <param name="blobsPerContainerToRestore">List of blobs containing Cosmos DB backups to be restored</param>
         private async Task RestoreDataFromBlobFile(string containerName, List<string> blobsPerContainerToRestore)
         {
             Console.WriteLine("Restoring required blobs from container: {0}", containerName);
@@ -308,10 +337,19 @@ namespace Microsoft.CosmosDB.PITRWithRestore.Restore
                     }
 
                     JArray jArray = JsonConvert.DeserializeObject<JArray>(sB.ToString());
-                    await WriteJArrayToCosmosDB(jArray);
+                    List<JObject> documentsFailedToRestore = await WriteJArrayToCosmosDB(jArray);
 
                     // If the Blob was successfully restored, update the success/failure tracking collection with the name of the restored Blob
-                    await UpdateSuccessfullyRestoreBlob(containerName, blobName);
+                    if(documentsFailedToRestore.Count == 0)
+                    {
+                        await this.UpdateSuccessfullyRestoreBlob(containerName, blobName);
+                    }
+                    else
+                    {
+                        // Update documents that were not successfully restored to the specified Cosmos DB collection
+                        await this.UpdateFailedRestoreBlob(containerName, blobName);
+                    }
+                    
                 }
             }
         }
@@ -324,74 +362,34 @@ namespace Microsoft.CosmosDB.PITRWithRestore.Restore
         /// <returns></returns>
         private async Task<bool> VerifyPreviouslyRestoredBlob(string containerName, string blobName)
         {
-            string restoreSuccessFailureDatabaseName = ConfigurationManager.AppSettings["RestoreSuccessFailureDatabaseName"];
-            string restoreSuccessFailureCollectionName = ConfigurationManager.AppSettings["RestoreSuccessFailureCollectionName"];
-            Uri documentsLink = UriFactory.CreateDocumentUri(restoreSuccessFailureDatabaseName, restoreSuccessFailureCollectionName, string.Concat(containerName, "-", blobName));
-
-            int numRetries = 0;
-
+            string restoreSuccessDatabaseName = ConfigurationManager.AppSettings["RestoreSuccessDatabaseName"];
+            string restoreSuccessCollectionName = ConfigurationManager.AppSettings["RestoreSuccessCollectionName"];
+            
             bool documentAlreadyRestored = false;
             try
             {
-                await this.DocumentClient.ReadDocumentAsync(
-                    documentsLink, 
-                    new RequestOptions { PartitionKey = new PartitionKey(string.Concat(containerName, "-", blobName)) });
-            
-                Console.WriteLine("Blob: {0} from container: {1} has already been restored. SKIPPING...", containerName, blobName);
+                ResourceResponse<Document> restoredBlobDocument = await CosmosDBHelper.ReadDocmentAsync(
+                    this.DocumentClient,
+                    restoreSuccessDatabaseName, 
+                    restoreSuccessCollectionName, 
+                    string.Concat(containerName, "-", blobName), 
+                    string.Concat(containerName, "-", blobName), 
+                    this.MaxRetriesOnDocumentClientExceptions);
 
-                documentAlreadyRestored = true;
-            }
-            catch (DocumentClientException ex)
-            {
-                if ((int)ex.StatusCode == 404)
+                if(restoredBlobDocument != null)
                 {
-                    // The document has already been restored, simply return a status of false
+                    documentAlreadyRestored = true;
+                    Console.WriteLine("Blob: {0} from container: {1} has already been restored. SKIPPING...", containerName, blobName);
+                }
+                else
+                {
                     documentAlreadyRestored = false;
                     Console.WriteLine("Blob: {0} from container: {1} has NOT been restored. RESTORING...", containerName, blobName);
                 }
-                else if ((int)ex.StatusCode == 429)
-                {
-                    Console.WriteLine("Received rate limiting exception when attempting to read document: {0}. Retrying", documentsLink);
-
-                    // If the write is rate limited, wait for twice the recommended wait time specified in the exception
-                    int sleepTime = (int)ex.RetryAfter.TotalMilliseconds * 2;
-
-                    // Custom retry logic to keep retrying when the document read is rate limited
-                    bool success = false;
-                    while (!success && numRetries <= this.MaxRetriesOnDocumentClientExceptions)
-                    {
-                        Console.WriteLine("Received rate limiting exception when attempting to read document: {0}. Retrying", documentsLink);
-
-                        // Sleep for twice the recommended amount from the Cosmos DB rate limiting exception
-                        Thread.Sleep(sleepTime);
-
-                        try
-                        {
-                            await this.DocumentClient.ReadDocumentAsync(documentsLink);
-
-                            // The document has already been restored, simply return a status of true for this blob to be skipped during restore
-                            Console.WriteLine("Blob: {0} from container: {1} has already been restored. SKIPPING...", containerName, blobName);
-                            success = true;
-                            documentAlreadyRestored = true;
-                        }
-                        catch (DocumentClientException e)
-                        {
-                            if ((int)e.StatusCode == 404)
-                            {
-                                success = true;
-
-                                // The document has not been restored, simply return a status of false for this blob to be picked up for restore
-                                Console.WriteLine("Blob: {0} from container: {1} has NOT been restored. RESTORING...", containerName, blobName);
-                                documentAlreadyRestored = false;
-                            }
-                        }
-                        catch (Exception exception)
-                        {
-                            Console.WriteLine("Caught Exception when retrying. Exception was: {0}. Will continue to retry.", exception.Message);
-                            numRetries++;
-                        }
-                    }
-                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("Exception encountered when determining if Blob: {0} from container: {1} has already been restored. Will proceed to restore...", containerName, blobName);
             }
 
             return documentAlreadyRestored;
@@ -406,66 +404,60 @@ namespace Microsoft.CosmosDB.PITRWithRestore.Restore
         /// <returns></returns>
         private async Task UpdateSuccessfullyRestoreBlob(string containerName, string blobName)
         {
-            string restoreSuccessFailureDatabaseName = ConfigurationManager.AppSettings["RestoreSuccessFailureDatabaseName"];
-            string restoreSuccessFailureCollectionName = ConfigurationManager.AppSettings["RestoreSuccessFailureCollectionName"];
-            Uri documentsFeedLink = UriFactory.CreateDocumentCollectionUri(restoreSuccessFailureDatabaseName, restoreSuccessFailureCollectionName);
-
-            BlobRestoreSuccessDocument blobRestoreSuccessDocument = new BlobRestoreSuccessDocument();
+            string restoreDatabaseName = ConfigurationManager.AppSettings["RestoreSuccessDatabaseName"];
+            string restoreSuccessCollectionName = ConfigurationManager.AppSettings["RestoreSuccessCollectionName"];
+            
+            BlobRestoreStatusDocument blobRestoreSuccessDocument = new BlobRestoreStatusDocument();
             blobRestoreSuccessDocument.ContainerName = containerName;
             blobRestoreSuccessDocument.BlobName = blobName;
             blobRestoreSuccessDocument.Status = "success";
             blobRestoreSuccessDocument.Id = string.Concat(containerName, "-", blobName);
 
-            int numRetries = 0;
+            try
+            {
+                await CosmosDBHelper.UpsertDocumentAsync(
+                    this.DocumentClient, 
+                    restoreDatabaseName, 
+                    restoreSuccessCollectionName, 
+                    blobRestoreSuccessDocument, 
+                    this.MaxRetriesOnDocumentClientExceptions);
+                
+                Console.WriteLine("Successfully updated RestoreSucessCollection with the successfully restored blob: {0} in container: {1}", blobName, containerName);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("Caught Exception when retrying. Exception was: {0}. Will continue to retry.", ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// Update the collection tracking blobs which were NOT successfully restored
+        /// by creating a document containing the names of the blob file (and its container) which were NOT restored
+        /// </summary>
+        /// <param name="containerName">Blob Storage container name of the Blob that was NOT successfully restored</param>
+        /// <param name="blobName">Blob file that was NOT restored successfully</param>
+        /// <returns></returns>
+        private async Task UpdateFailedRestoreBlob(string containerName, string blobName)
+        {
+            string restoreFailureDatabaseName = ConfigurationManager.AppSettings["RestoreFailureDatabaseName"];
+            string restoreFailureCollectionName = ConfigurationManager.AppSettings["RestoreFailureCollectionName"];
+
+            BlobRestoreStatusDocument blobRestoreFailureDocument = new BlobRestoreStatusDocument();
+            blobRestoreFailureDocument.ContainerName = containerName;
+            blobRestoreFailureDocument.BlobName = blobName;
+            blobRestoreFailureDocument.Status = "failure";
+            blobRestoreFailureDocument.Id = string.Concat(containerName, "-", blobName);
 
             try
             {
-                await this.DocumentClient.UpsertDocumentAsync(documentsFeedLink, blobRestoreSuccessDocument, null, true);
+                await CosmosDBHelper.UpsertDocumentAsync(
+                    this.DocumentClient,
+                    restoreFailureDatabaseName,
+                    restoreFailureCollectionName,
+                    blobRestoreFailureDocument,
+                    this.MaxRetriesOnDocumentClientExceptions);
 
-                Console.WriteLine("Successfully update RestoreSucessFailureCollection with the successfully restored blob: {0} in container: {1}", blobName, containerName);
-            }
-            catch (DocumentClientException ex)
-            {
-                // Keep retrying when rate limited
-                if ((int)ex.StatusCode == 429)
-                {
-                    Console.WriteLine("Received rate limiting exception when attempting to update successfully restored blob: {0}", blobName);
-
-                    // If the write is rate limited, wait for twice the recommended wait time specified in the exception
-                    int sleepTime = (int)ex.RetryAfter.TotalMilliseconds * 2;
-
-                    bool success = false;
-                    while (!success && numRetries <= this.MaxRetriesOnDocumentClientExceptions)
-                    {
-                        Console.WriteLine("Waiting for twice the recommended time when rate limited");
-
-                        // Sleep for twice the recommended amount from the Cosmos DB rate limiting exception
-                        Thread.Sleep(sleepTime);
-
-                        try
-                        {
-                            await this.DocumentClient.UpsertDocumentAsync(documentsFeedLink, blobRestoreSuccessDocument, null, true);
-
-                            Console.WriteLine(
-                                "Successfully update RestoreSucessFailureCollection with the successfully restored blob: {0} in container: {1}", 
-                                blobName, 
-                                containerName);
-
-                            success = true;                            
-                        }
-                        catch (DocumentClientException e)
-                        {
-                            Console.WriteLine("Still received an exception. Original  exception was: {0}", e.Message);
-                            sleepTime = (int)e.RetryAfter.TotalMilliseconds * 2;
-                            numRetries++;
-                        }
-                        catch (Exception exception)
-                        {
-                            Console.WriteLine("Caught Exception when retrying. Exception was: {0}. Will continue to retry.", exception.Message);
-                            numRetries++;
-                        }
-                    }
-                }
+                Console.WriteLine("Successfully updated RestoreFailureCollection with the blob: {0} in container: {1} which was NOT successfully restored", blobName, containerName);
             }
             catch (Exception ex)
             {
@@ -519,27 +511,6 @@ namespace Microsoft.CosmosDB.PITRWithRestore.Restore
         }
 
         /// <summary>
-        /// Retrieves the list of blob containers in the storage account to restore into the specified Cosmos DB account/collection
-        /// </summary>
-        /// <returns></returns>
-        private List<string> GetListOfContainersInStorageAccount()
-        {
-            Console.WriteLine("Fetching list of container names");
-
-            List<string> containerNames = new List<string>();
-            foreach (CloudBlobContainer eachContainer in this.CloudBlobClient.ListContainers())
-            {
-                if(eachContainer.Name.StartsWith("partition"))
-                {
-                    Console.WriteLine("Found container: {0}", eachContainer.Name);
-                    containerNames.Add(eachContainer.Name);
-                }
-            }
-
-            return containerNames;
-        }
-
-        /// <summary>
         /// Shuffle the list of container names retrieved from Blob Storage.
         /// This facilitates easier lease management on blob containers containing blobs to restore
         /// </summary>
@@ -588,9 +559,9 @@ namespace Microsoft.CosmosDB.PITRWithRestore.Restore
                 // If leases have been acquired for all containers in the Blob Storage account, there are no more containers to process for restore
                 if (numberOfDocumentsInBlobStorageLeaseCollection < numberOfContainersToRestore)
                 {
-                    string restoreHelperDatabaseName = ConfigurationManager.AppSettings["RestoreHelperDatabaseName"];
+                    string restoreDatabaseName = ConfigurationManager.AppSettings["RestoreHelperDatabaseName"];
                     string restoreHelperCollectionName = ConfigurationManager.AppSettings["RestoreHelperCollectionName"];
-                    Uri documentsFeedLink = UriFactory.CreateDocumentCollectionUri(restoreHelperDatabaseName, restoreHelperCollectionName);
+                    Uri documentsFeedLink = UriFactory.CreateDocumentCollectionUri(restoreDatabaseName, restoreHelperCollectionName);
 
                     foreach (string eachContainerToRestore in shuffledContainerNames)
                     {
