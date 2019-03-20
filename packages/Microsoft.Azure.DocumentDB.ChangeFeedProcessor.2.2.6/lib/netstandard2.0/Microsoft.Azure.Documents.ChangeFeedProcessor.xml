@@ -702,6 +702,31 @@
             <param name="info">The SerializationInfo object that holds serialized object data for the exception being thrown.</param>
             <param name="context">The StreamingContext that contains contextual information about the source or destination.</param>
         </member>
+        <member name="T:Microsoft.Azure.Documents.ChangeFeedProcessor.Exceptions.ObserverException">
+            <summary>
+            Exception occurred when an operation in an <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.IChangeFeedObserver"/> is running and throws by user code
+            </summary>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.Exceptions.ObserverException.#ctor(System.Exception)">
+            <summary>
+            Initializes a new instance of the <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.Exceptions.ObserverException" /> class using the specified internal exception.
+            </summary>
+            <param name="originalException"><see cref="T:System.Exception"/> thrown by the user code.</param>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.Exceptions.ObserverException.#ctor(System.Runtime.Serialization.SerializationInfo,System.Runtime.Serialization.StreamingContext)">
+            <summary>
+            Initializes a new instance of the <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.Exceptions.ObserverException" /> class using default values.
+            </summary>
+            <param name="info">The SerializationInfo object that holds serialized object data for the exception being thrown.</param>
+            <param name="context">The StreamingContext that contains contextual information about the source or destination.</param>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.Exceptions.ObserverException.GetObjectData(System.Runtime.Serialization.SerializationInfo,System.Runtime.Serialization.StreamingContext)">
+            <summary>
+            Sets the System.Runtime.Serialization.SerializationInfo with information about the exception.
+            </summary>
+            <param name="info">The SerializationInfo object that holds serialized object data for the exception being thrown.</param>
+            <param name="context">The StreamingContext that contains contextual information about the source or destination.</param>
+        </member>
         <member name="T:Microsoft.Azure.Documents.ChangeFeedProcessor.Exceptions.PartitionException">
             <summary>
             General exception occurred during partition processing.
