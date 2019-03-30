@@ -17,7 +17,7 @@ namespace Microsoft.CosmosDB.PITRWithRestore.BlobStorage
         /// <param name="compressedByteArray">Compressed byte array containing compressed Cosmos DB documents to be backed up</param>
         /// <param name="maxRetriesOnRateLimitedWritesToBlobAccount">Maximum number of retries when writes to the Blob Storage account fail</param>
         /// <returns></returns>
-        public static bool WriteToBlobStorage(CloudBlockBlob blockBlob, byte[] compressedByteArray, int maxRetriesOnRateLimitedWritesToBlobAccount)
+        public static void WriteToBlobStorage(CloudBlockBlob blockBlob, byte[] compressedByteArray, int maxRetriesOnRateLimitedWritesToBlobAccount)
         {
             bool writeToBlobSucceeded = false;
 
@@ -65,13 +65,16 @@ namespace Microsoft.CosmosDB.PITRWithRestore.BlobStorage
                         }
                     }
                 }
-            }
-            catch (Exception ex)
-            {
-                writeToBlobSucceeded = false;
-            }
+                else
+                {
+                    throw ex;
+                }
 
-            return writeToBlobSucceeded;
+                if(!writeToBlobSucceeded)
+                {
+                    throw ex;
+                }
+            }
         }
 
         /// <summary>
