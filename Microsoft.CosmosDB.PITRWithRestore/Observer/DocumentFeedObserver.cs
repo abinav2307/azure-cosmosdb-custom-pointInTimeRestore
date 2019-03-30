@@ -2,6 +2,7 @@
 namespace Microsoft.CosmosDB.PITRWithRestore
 {
     using System;
+    using System.Collections;
     using System.Collections.Generic;
     using System.Configuration;
     using System.Threading;
@@ -16,6 +17,7 @@ namespace Microsoft.CosmosDB.PITRWithRestore
     using Microsoft.WindowsAzure.Storage.Blob;
     using Microsoft.CosmosDB.PITRWithRestore.BlobStorage;
     using Microsoft.CosmosDB.PITRWithRestore.CosmosDB;
+    using Microsoft.CosmosDB.PITRWithRestore.Backup;
 
     using Newtonsoft.Json.Linq;
 
@@ -104,31 +106,139 @@ namespace Microsoft.CosmosDB.PITRWithRestore
 
             CloudBlobContainer cloudBlobContainer = this.CloudBlobClient.GetContainerReference(containerName);
 
-            // Check for Conflict
-            if(!cloudBlobContainer.Exists())
-            {
-                cloudBlobContainer.CreateIfNotExists();
-            }
-            
+            cloudBlobContainer.CreateIfNotExists();
+
             CloudBlockBlob blockBlob = cloudBlobContainer.GetBlockBlobReference(fileName);
             if(blockBlob.Exists())
             {
-                fileName = string.Concat(fileName, "-", Guid.NewGuid());
-                blockBlob = cloudBlobContainer.GetBlockBlobReference(fileName);
-            }
-            try
-            {
-                bool isBackupToBlobStorageSuccess = BlobStorageHelper.WriteToBlobStorage(blockBlob, compressedByteArray, this.MaxRetriesOnRateLimitedWritesToBlobAccount);
-                if(!isBackupToBlobStorageSuccess)
+                if (!VerifyIfBlobPreviouslyBackedUp(blockBlob, compressedByteArray))
                 {
-                    this.TrackFailedBatchesOfBackups(docs);
+                    try
+                    {
+                        fileName = string.Concat(fileName, "-", Guid.NewGuid());
+                        blockBlob = cloudBlobContainer.GetBlockBlobReference(fileName);
+
+                        BlobStorageHelper.WriteToBlobStorage(blockBlob, compressedByteArray, this.MaxRetriesOnRateLimitedWritesToBlobAccount);
+                        this.TrackSuccessfulBatchesOfBackups(containerName, docs);
+                    }
+                    catch (Exception ex)
+                    {
+                        this.TrackFailedBatchesOfBackups(containerName, fileName, compressedByteArray, ex);
+                    }
+                }
+                else
+                {
+                    this.TrackFailedBatchesOfBackups(containerName, fileName, compressedByteArray, null);
                 }
             }
-            catch (Exception e)
+            else
             {
-                // Handle exception errors by writing batch back to Azure Cosmos DB, if user prefers
-                Console.WriteLine("Exception encountered when attempting to back up changes to Blob Storage. Original exception was: {0}", e.Message);
-                this.TrackFailedBatchesOfBackups(docs);
+                try
+                {
+                    BlobStorageHelper.WriteToBlobStorage(blockBlob, compressedByteArray, this.MaxRetriesOnRateLimitedWritesToBlobAccount);
+                    this.TrackSuccessfulBatchesOfBackups(containerName, docs);
+                }
+                catch (Exception ex)
+                {
+                    this.TrackFailedBatchesOfBackups(containerName, fileName, compressedByteArray, ex);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Verify if this blob was previously backed up
+        /// </summary>
+        /// <param name="blockBlob">CloudBlockBlob instance</param>
+        /// <param name="compressedByteArray">Compressed byte array containing the list of documents in GZip compressed form</param>
+        /// <returns></returns>
+        private bool VerifyIfBlobPreviouslyBackedUp(CloudBlockBlob blockBlob, byte[] compressedByteArray)
+        {
+            bool isPreviouslyBackedUp = false;
+
+            blockBlob.FetchAttributes();
+
+            byte[] byteArray = new byte[blockBlob.Properties.Length];
+            blockBlob.DownloadToByteArray(byteArray, 0);
+
+            isPreviouslyBackedUp = StructuralComparisons.StructuralEqualityComparer.Equals(byteArray, compressedByteArray);
+            return isPreviouslyBackedUp;
+        }
+
+        /// <summary>
+        /// Keep track of the number of successfully backed up documents per container
+        /// </summary>
+        /// <param name="containerName">Name of the Blob Storage container containing the backups</param>
+        /// <param name="docs">List of documents successfully backed up to the specified Blob Storage account</param>
+        private void TrackSuccessfulBatchesOfBackups(string containerName, IReadOnlyList<Document> docs)
+        {
+            Console.WriteLine("Tracking successful backups to Cosmos DB collection tracking successful backups");
+
+            string backupSuccessDatabaseName = ConfigurationManager.AppSettings["BackupSuccessDatabaseName"];
+            string backupSuccessCollectionName = ConfigurationManager.AppSettings["BackupSuccessCollectionName"];
+            Uri documentsFeedLink = UriFactory.CreateDocumentCollectionUri(backupSuccessDatabaseName, backupSuccessCollectionName);
+
+            BackupSuccessDocument backupSuccessDocument = new BackupSuccessDocument();
+            backupSuccessDocument.ContainerName = containerName;
+            backupSuccessDocument.Id = containerName;
+            
+            ResourceResponse<Document> document = CosmosDBHelper.ReadDocmentAsync(
+                this.DocumentClient, 
+                backupSuccessDatabaseName,
+                backupSuccessCollectionName, 
+                containerName, 
+                containerName,
+                this.MaxRetriesOnRateLimitedWritesToBlobAccount).Result;
+
+            if(document == null)
+            {
+                backupSuccessDocument.DocumentCount = docs.Count;
+
+                document = CosmosDBHelper.CreateDocumentAsync(
+                    this.DocumentClient, 
+                    backupSuccessDatabaseName, 
+                    backupSuccessCollectionName, 
+                    backupSuccessDocument, 
+                    this.MaxRetriesOnRateLimitedWritesToBlobAccount).Result;
+            }
+            else
+            {
+                int numAttemptsIfConflict = 0;
+                bool success = false;
+
+                while (!success && numAttemptsIfConflict < this.MaxRetriesOnRateLimitedWritesToBlobAccount)
+                {
+                    int currentSuccessCount = document.Resource.GetPropertyValue<int>("documentCount");
+                    backupSuccessDocument.DocumentCount = currentSuccessCount + docs.Count;
+
+                    var ac = new AccessCondition { Condition = document.Resource.ETag, Type = AccessConditionType.IfMatch };
+                    RequestOptions requestOptions = new RequestOptions { AccessCondition = ac };
+
+                    document = CosmosDBHelper.ReplaceDocumentAsync(
+                        this.DocumentClient,
+                        backupSuccessDatabaseName,
+                        backupSuccessCollectionName,
+                        containerName,
+                        backupSuccessDocument,
+                        requestOptions,
+                        this.MaxRetriesOnRateLimitedWritesToBlobAccount).Result;
+
+                    numAttemptsIfConflict++;
+
+                    if (document == null)
+                    {
+                        document = CosmosDBHelper.ReadDocmentAsync(
+                            this.DocumentClient,
+                            backupSuccessDatabaseName,
+                            backupSuccessCollectionName,
+                            containerName,
+                            containerName,
+                            this.MaxRetriesOnRateLimitedWritesToBlobAccount).Result;                        
+                    }
+                    else
+                    {
+                        success = true;
+                    }
+                }                
             }
         }
 
@@ -136,20 +246,46 @@ namespace Microsoft.CosmosDB.PITRWithRestore
         /// Tracks failed batches of backups by writing the documents back to a smaller collection,
         /// solely responsible for storing documents, which could not be backed up to the Blob Storage Account.
         /// </summary>
+        /// <param name="containerName">Container within which this backup should have been persisted</param>
         /// <param name="docs">Batch of created/updated documents from ChangeFeedProcessor which could not be backed up to the Azure Blob Storage Account</param>
-        private void TrackFailedBatchesOfBackups(IReadOnlyList<Document> docs)
+        /// <param name="fileName">Name of the blob file which was not successfully persisted</param>
+        /// <param name="ex">Exception which caused this backup to not be persisted in the specified blob storage account</param>
+        private void TrackFailedBatchesOfBackups(string containerName, string fileName, byte[] docs, Exception ex)
         {
             Console.WriteLine("Tracking failed backups to Cosmos DB collecion tracking failures during backup process");
 
             string backupFailureDatabaseName = ConfigurationManager.AppSettings["BackupFailureDatabaseName"];
             string backupFailureCollectionName = ConfigurationManager.AppSettings["BackupFailureCollectionName"];
+            string convertedByteArray = Encoding.UTF8.GetString(docs, 0, docs.Length);
+
             Uri documentsFeedLink = UriFactory.CreateDocumentCollectionUri(backupFailureDatabaseName, backupFailureCollectionName);
 
-            CosmosDBHelper.WriteDocumentsToCosmosDB(
-                this.DocumentClient,
-                backupFailureDatabaseName,
+            BackupFailureDocument backupFailureDocument = new BackupFailureDocument();
+            backupFailureDocument.ContainerName = containerName;
+            backupFailureDocument.Id = fileName;
+            backupFailureDocument.CompressedByteArray = convertedByteArray;
+
+            if (ex != null)
+            {
+                backupFailureDocument.ExceptionType = ex.GetType().ToString();
+                backupFailureDocument.ExceptionMessage = ex.Message;
+                if (ex.InnerException != null)
+                {
+                    backupFailureDocument.InnerExceptionMessage = ex.InnerException.Message;
+                }
+
+                backupFailureDocument.ToString = ex.ToString();
+            }
+            else
+            {
+                backupFailureDocument.ToString = "Blob was previously backed up successfully. Ignoring!";
+            }
+
+            CosmosDBHelper.CreateDocumentAsync(
+                this.DocumentClient, 
+                backupFailureDatabaseName, 
                 backupFailureCollectionName, 
-                docs, 
+                backupFailureDocument, 
                 this.MaxRetriesOnRateLimitedWritesToBlobAccount).Wait();
         }
 

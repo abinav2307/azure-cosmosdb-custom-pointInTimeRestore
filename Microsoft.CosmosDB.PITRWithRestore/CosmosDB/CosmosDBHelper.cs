@@ -229,6 +229,145 @@ namespace Microsoft.CosmosDB.PITRWithRestore.CosmosDB
         }
 
         /// <summary>
+        /// Creates the specified document in Cosmos DB and retries when rate limited
+        /// </summary>
+        /// <param name="client">DocumentClient instance to interact with Azure Cosmos DB Service</param>
+        /// <param name="databaseName">Database name of the collection containing the document to read</param>
+        /// <param name="collectionName">Collection name containing the document</param>
+        /// <param name="document">Document to create</param>
+        /// <param name="maxRetriesOnDocumentClientExceptions">Maximum number of retries when rate limited</param>
+        /// <returns></returns>
+        public static async Task<ResourceResponse<Document>> ReplaceDocumentAsync(
+            DocumentClient client,
+            string databaseName,
+            string collectionName,
+            string documentId,
+            object document,
+            RequestOptions requestOptions,
+            int maxRetriesOnDocumentClientExceptions)
+        {
+            int numRetries = 0;
+            Uri documentUri = UriFactory.CreateDocumentUri(databaseName, collectionName, documentId);
+            ResourceResponse<Document> replacedDocument = null;
+            try
+            {
+                replacedDocument = await client.ReplaceDocumentAsync(documentUri.ToString(), document, requestOptions);
+            }
+            catch (DocumentClientException ex)
+            {
+                // Retry when rate limited for as many times as specified
+                if ((int)ex.StatusCode == 429)
+                {
+                    Console.WriteLine("Received rate limiting exception when attempting to upsert document.");
+
+                    // If the write is rate limited, wait for twice the recommended wait time specified in the exception
+                    int sleepTime = (int)ex.RetryAfter.TotalMilliseconds * 2;
+
+                    bool success = false;
+                    while (!success && numRetries <= maxRetriesOnDocumentClientExceptions)
+                    {
+                        Console.WriteLine("Waiting for twice the recommended time when rate limited");
+
+                        // Sleep for twice the recommended amount from the Cosmos DB rate limiting exception
+                        Thread.Sleep(sleepTime);
+
+                        try
+                        {
+                            replacedDocument = await client.ReplaceDocumentAsync(documentUri.ToString(), document, requestOptions);
+                            success = true;
+                        }
+                        catch (DocumentClientException e)
+                        {
+                            if ((int)e.StatusCode == 429)
+                            {
+                                Console.WriteLine("Still received an exception. Original  exception was: {0}", e.Message);
+                                sleepTime = (int)e.RetryAfter.TotalMilliseconds * 2;
+                            }
+
+                            numRetries++;
+                        }
+                        catch (Exception exception)
+                        {
+                            Console.WriteLine("Caught Exception when retrying. Exception was: {0}. Will continue to retry.", exception.Message);
+                            numRetries++;
+                        }
+                    }
+                }
+            }
+
+            return replacedDocument;
+        }
+
+        /// <summary>
+        /// Creates the specified document in Cosmos DB and retries when rate limited
+        /// </summary>
+        /// <param name="client">DocumentClient instance to interact with Azure Cosmos DB Service</param>
+        /// <param name="databaseName">Database name of the collection containing the document to read</param>
+        /// <param name="collectionName">Collection name containing the document</param>
+        /// <param name="document">Document to create</param>
+        /// <param name="maxRetriesOnDocumentClientExceptions">Maximum number of retries when rate limited</param>
+        /// <returns></returns>
+        public static async Task<ResourceResponse<Document>> CreateDocumentAsync(
+            DocumentClient client,
+            string databaseName,
+            string collectionName,
+            object document,
+            int maxRetriesOnDocumentClientExceptions)
+        {
+            int numRetries = 0;
+            Uri documentsFeedLink = UriFactory.CreateDocumentCollectionUri(databaseName, collectionName);
+
+            ResourceResponse<Document> createdDocument = null;
+            try
+            {
+                createdDocument = await client.CreateDocumentAsync(documentsFeedLink, document, null, true);
+            }
+            catch (DocumentClientException ex)
+            {
+                // Retry when rate limited for as many times as specified
+                if ((int)ex.StatusCode == 429)
+                {
+                    Console.WriteLine("Received rate limiting exception when attempting to upsert document.");
+
+                    // If the write is rate limited, wait for twice the recommended wait time specified in the exception
+                    int sleepTime = (int)ex.RetryAfter.TotalMilliseconds * 2;
+
+                    bool success = false;
+                    while (!success && numRetries <= maxRetriesOnDocumentClientExceptions)
+                    {
+                        Console.WriteLine("Waiting for twice the recommended time when rate limited");
+
+                        // Sleep for twice the recommended amount from the Cosmos DB rate limiting exception
+                        Thread.Sleep(sleepTime);
+
+                        try
+                        {
+                            createdDocument = await client.CreateDocumentAsync(documentsFeedLink, document, null, true);
+                            success = true;
+                        }
+                        catch (DocumentClientException e)
+                        {
+                            if ((int)e.StatusCode == 429)
+                            {
+                                Console.WriteLine("Still received an exception. Original  exception was: {0}", e.Message);
+                                sleepTime = (int)e.RetryAfter.TotalMilliseconds * 2;
+                            }
+
+                            numRetries++;
+                        }
+                        catch (Exception exception)
+                        {
+                            Console.WriteLine("Caught Exception when retrying. Exception was: {0}. Will continue to retry.", exception.Message);
+                            numRetries++;
+                        }
+                    }
+                }
+            }
+
+            return createdDocument;
+        }
+
+        /// <summary>
         /// Returns a count of documents in the specified Cosmos DB collection
         /// </summary>
         /// <param name="client">DocumentClient instance to interact with Azure Cosmos DB Service</param>

@@ -71,6 +71,19 @@ namespace Microsoft.CosmosDB.PITRWithRestore
                 backupFailureCollectionName, 
                 backupFailureCollectionThroughput, 
                 backupFailureCollectionPartitionKey).Wait();
+
+            string backupSuccessDatabaseName = ConfigurationManager.AppSettings["BackupSuccessDatabaseName"];
+            string backupSuccessCollectionName = ConfigurationManager.AppSettings["BackupSuccessCollectionName"];
+            int backupSuccessCollectionThroughput = int.Parse(ConfigurationManager.AppSettings["BackupSuccessCollectionThroughput"]);
+            string backupSuccessCollectionPartitionKey = ConfigurationManager.AppSettings["BackupSuccessCollectionPartitionKey"];
+
+            // Create collection to track backup failures
+            CosmosDBHelper.CreateCollectionIfNotExistsAsync(
+                this.DocumentClient,
+                backupSuccessDatabaseName,
+                backupSuccessCollectionName,
+                backupSuccessCollectionThroughput,
+                backupSuccessCollectionPartitionKey).Wait();
         }
 
         /// <summary>

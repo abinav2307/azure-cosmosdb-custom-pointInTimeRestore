@@ -87,9 +87,10 @@ namespace Microsoft.CosmosDB.PITRWithRestore.Backup
             DocumentFeedObserverFactory docObserverFactory = new DocumentFeedObserverFactory(this.DocumentClient);
             ChangeFeedProcessorOptions feedProcessorOptions = new ChangeFeedProcessorOptions();
 
+            int feedPollDelayInSeconds = int.Parse(ConfigurationManager.AppSettings["FeedPollDelayInSeconds"]);
             feedProcessorOptions.LeaseRenewInterval = TimeSpan.FromSeconds(240);
             feedProcessorOptions.LeaseExpirationInterval = TimeSpan.FromSeconds(240);
-            feedProcessorOptions.FeedPollDelay = TimeSpan.FromMilliseconds(60*1000);
+            feedProcessorOptions.FeedPollDelay = TimeSpan.FromMilliseconds(feedPollDelayInSeconds * 1000);
             feedProcessorOptions.StartFromBeginning = true;
             feedProcessorOptions.MaxItemCount = 2000;
 

@@ -125,8 +125,8 @@ namespace Microsoft.CosmosDB.PITRWithRestoreTests
             Task.WaitAll(tasks.ToArray());
             Thread.Sleep(60 * 2 * 1000);
 
-            // 4. Validate the number of documents backed up to Blob Storage
-            int numberOfSampleDocumentsGenerated = 16752;// int.Parse(ConfigurationManager.AppSettings["NumDocumentsToGenerate"]);
+            //// 4. Validate the number of documents backed up to Blob Storage
+            int numberOfSampleDocumentsGenerated = int.Parse(ConfigurationManager.AppSettings["NumDocumentsToGenerate"]);
             Console.WriteLine("Count retrieved = {0}", BlobStorageHelper.GetListOfDocumentsBackedUpInContainer(this.CloudBlobClient));
             Assert.AreEqual(BlobStorageHelper.GetListOfDocumentsBackedUpInContainer(this.CloudBlobClient), numberOfSampleDocumentsGenerated);
         }
