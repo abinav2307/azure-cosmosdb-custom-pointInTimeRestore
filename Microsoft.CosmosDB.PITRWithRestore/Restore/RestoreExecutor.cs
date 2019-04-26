@@ -3,11 +3,13 @@ namespace Microsoft.CosmosDB.PITRWithRestore.Restore
 {
     using Microsoft.Azure.Documents.Client;
     using Microsoft.Azure.Documents;
+    using Microsoft.Azure.Documents.Linq;
 
     using Microsoft.WindowsAzure.Storage;
     using Microsoft.WindowsAzure.Storage.Blob;
     using Microsoft.CosmosDB.PITRWithRestore.CosmosDB;
     using Microsoft.CosmosDB.PITRWithRestore.BlobStorage;
+    using Microsoft.CosmosDB.PITRWithRestore.Backup;
     using Newtonsoft.Json;
     using Newtonsoft.Json.Linq;
 
@@ -198,23 +200,140 @@ namespace Microsoft.CosmosDB.PITRWithRestore.Restore
         {
             // Fetch the list of blob containers to restore data from
             List<string> containerNames = BlobStorageHelper.GetListOfContainersInStorageAccount(this.CloudBlobClient);
-
-            // Determine the first Blob Storage container to acquire a lease on and restore to Cosmos DB
+            
+            //Determine the first Blob Storage container to acquire a lease on and restore to Cosmos DB
             string blobContainerToRestore = await GetNextContainerToRestore(containerNames);
 
             while (!string.IsNullOrEmpty(blobContainerToRestore))
             {
+                //First, go through the list of failed backups for this container and attempt to back them up again
+                await this.BackupFailedBackups(blobContainerToRestore);
+
                 // Get the list of blob files within the container(s) that satisfy the time windows for the restore
                 List<string> listOfBlobsToRestore = GetListOfBlobsToRestore(blobContainerToRestore);
 
                 // Read the Blob files, de-compress the data, and restore the documents to the new Cosmos DB collection
                 await this.RestoreDataFromBlobFile(blobContainerToRestore, listOfBlobsToRestore);
 
-                // Determine the next Blob Storage container to acquire a lease on and restore to Cosmos DB
+                //Determine the next Blob Storage container to acquire a lease on and restore to Cosmos DB
                 blobContainerToRestore = await GetNextContainerToRestore(containerNames);
             }
 
+            await this.TestRebackedUpBackups();
+
             Console.WriteLine("Completed executing restore on host: {0}", this.HostName);
+        }
+
+        private async Task TestRebackedUpBackups()
+        {
+            string containerName = "backup-test";
+            CloudBlobContainer blobContainer = this.CloudBlobClient.GetContainerReference(containerName);
+
+            List<string> blobsPerContainerToRestore = new List<string>();
+            foreach (IListBlobItem eachBlob in blobContainer.ListBlobs())
+            {
+                blobsPerContainerToRestore.Add(((CloudBlockBlob)eachBlob).Name);
+            }
+
+            foreach (string blobName in blobsPerContainerToRestore)
+            {
+                CloudBlockBlob blockBlob = blobContainer.GetBlockBlobReference(blobName);
+                blockBlob.FetchAttributes();
+
+                byte[] byteArray = new byte[blockBlob.Properties.Length];
+                blockBlob.DownloadToByteArray(byteArray, 0);
+
+                StringBuilder sB = new StringBuilder(byteArray.Length);
+                foreach (byte item in Decompress(byteArray))
+                {
+                    sB.Append((char)item);
+                }
+
+                JArray jArray = JsonConvert.DeserializeObject<JArray>(sB.ToString());
+                List<JObject> documentsFailedToRestore = await WriteJArrayToCosmosDB(jArray);
+            }
+        }
+
+        /// <summary>
+        /// Once again attempt to backup failed backups for the container being restored
+        /// </summary>
+        /// <param name="containerToRestore">Name of the Blob Storage container containiner the backups to be restored</param>
+        /// <returns></returns>
+        private async Task BackupFailedBackups(string containerToRestore)
+        {
+            CloudBlobContainer cloudBlobContainer = this.CloudBlobClient.GetContainerReference(containerToRestore);
+            cloudBlobContainer.CreateIfNotExists();
+
+            string backupFailureDatabaseName = ConfigurationManager.AppSettings["BackupFailureDatabaseName"];
+            string backupFailureCollectionName = ConfigurationManager.AppSettings["BackupFailureCollectionName"];
+
+            string queryToExecute = string.Format("select * from c where c.containerName = '{0}'", containerToRestore);
+            string collectionLink =
+                UriFactory.CreateDocumentCollectionUri(backupFailureDatabaseName, backupFailureCollectionName).ToString();
+            try
+            {
+                var query = this.DocumentClient.CreateDocumentQuery<BackupFailureDocument>(collectionLink,
+                queryToExecute,
+                new FeedOptions()
+                {
+                    MaxDegreeOfParallelism = -1,
+                    MaxItemCount = -1,
+                    EnableCrossPartitionQuery = true
+                }).AsDocumentQuery();
+                while (query.HasMoreResults)
+                {
+                    var result = await query.ExecuteNextAsync();
+                    foreach (BackupFailureDocument eachFailedBackupDocument in result)
+                    {
+                        if(eachFailedBackupDocument.ExceptionType != null)
+                        {
+                            // Extract the name of the blob as it should appear in the Blob Storage Account
+                            string fileName = eachFailedBackupDocument.Id;
+
+                            // Extract the Gzip compressed backup
+                            string compressedBackupAsString = eachFailedBackupDocument.CompressedByteArray;
+
+                            // Convert the string representation of the byte array back into a byte array
+                            byte[] compressedByteArray = new byte[compressedBackupAsString.Length];
+                            int indexBA = 0;
+                            foreach (char item in compressedBackupAsString.ToCharArray())
+                            {
+                                compressedByteArray[indexBA++] = (byte)item;
+                            }
+
+                            CloudBlockBlob blockBlob = cloudBlobContainer.GetBlockBlobReference(fileName);
+
+                            try
+                            {
+                                BlobStorageHelper.WriteToBlobStorage(
+                                    blockBlob,
+                                    compressedByteArray,
+                                    this.MaxRetriesOnDocumentClientExceptions);
+
+                                // Upon successfully backing up the previously failed backup,
+                                // delete the document from the 'BackupFailureCollection'
+                                await CosmosDBHelper.DeleteDocmentAsync(
+                                    this.DocumentClient,
+                                    backupFailureDatabaseName,
+                                    backupFailureCollectionName,
+                                    fileName,
+                                    fileName,
+                                    this.MaxRetriesOnDocumentClientExceptions);
+                            }
+                            catch (Exception ex)
+                            {
+                                Console.WriteLine("Exception while attempting to backup previously failed backups: " + ex.Message);
+                                Console.WriteLine("Stack trace is: {0}", ex.StackTrace);
+                            }
+                        }                        
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("Exception message while querying for previously failed backups: " + ex.Message);
+                Console.WriteLine("Stack trace is: {0}", ex.StackTrace);
+            }
         }
 
         /// <summary>
