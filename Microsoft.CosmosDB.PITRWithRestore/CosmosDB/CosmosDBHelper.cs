@@ -160,6 +160,88 @@ namespace Microsoft.CosmosDB.PITRWithRestore.CosmosDB
         }
 
         /// <summary>
+        /// Deletes a document from the specified Cosmos DB collection and retries when rate limited
+        /// </summary>
+        /// <param name="client">DocumentClient instance to interact with Azure Cosmos DB</param>
+        /// <param name="databaseName">Database name of the collection containing the document to read</param>
+        /// <param name="collectionName">Collection name containing the document</param>
+        /// <param name="partitionKey">Partition key of the document to delete</param>
+        /// <param name="id">Id property of the document to delete</param>
+        /// <param name="maxRetriesOnDocumentClientExceptions">Maximum number of retries when rate limited</param>
+        /// <returns></returns>
+        public static async Task<bool> DeleteDocmentAsync(
+            DocumentClient client,
+            string databaseName,
+            string collectionName,
+            string partitionKey,
+            string id,
+            int maxRetriesOnDocumentClientExceptions)
+        {
+            int numRetries = 0;
+            Uri documentsLink = UriFactory.CreateDocumentUri(databaseName, collectionName, id);
+            ResourceResponse<Document> document = null;
+            bool success = false;
+
+            try
+            {
+                document = await client.DeleteDocumentAsync(
+                    documentsLink,
+                    new RequestOptions { PartitionKey = new PartitionKey(partitionKey) });
+
+                return true;
+            }
+            catch (DocumentClientException ex)
+            {
+                if ((int)ex.StatusCode == 404)
+                {
+                    success = true;
+                }
+                else if ((int)ex.StatusCode == 429)
+                {
+                    Console.WriteLine("Received rate limiting exception when attempting to read document: {0}. Retrying", documentsLink);
+
+                    // If the write is rate limited, wait for twice the recommended wait time specified in the exception
+                    int sleepTime = (int)ex.RetryAfter.TotalMilliseconds * 2;
+
+                    // Custom retry logic to keep retrying when the document read is rate limited
+                    while (!success && numRetries <= maxRetriesOnDocumentClientExceptions)
+                    {
+                        Console.WriteLine("Received rate limiting exception when attempting to read document: {0}. Retrying", documentsLink);
+
+                        // Sleep for twice the recommended amount from the Cosmos DB rate limiting exception
+                        Thread.Sleep(sleepTime);
+
+                        try
+                        {
+                            await client.DeleteDocumentAsync(
+                                documentsLink,
+                                new RequestOptions { PartitionKey = new PartitionKey(partitionKey) });
+                        }
+                        catch (DocumentClientException e)
+                        {
+                            if ((int)e.StatusCode == 404)
+                            {
+                                success = true;
+                            }
+                            else if ((int)e.StatusCode == 429)
+                            {
+                                sleepTime = (int)e.RetryAfter.TotalMilliseconds * 2;
+                                numRetries++;
+                            }
+                        }
+                        catch (Exception exception)
+                        {
+                            Console.WriteLine("Caught Exception when retrying. Exception was: {0}. Will continue to retry.", exception.Message);
+                            numRetries++;
+                        }
+                    }
+                }
+            }
+
+            return success;
+        }
+
+        /// <summary>
         /// Upserts the specified document in Cosmos DB and retries when rate limited
         /// </summary>
         /// <param name="client">DocumentClient instance to interact with Azure Cosmos DB Service</param>

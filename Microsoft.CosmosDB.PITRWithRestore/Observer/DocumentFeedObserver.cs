@@ -123,12 +123,12 @@ namespace Microsoft.CosmosDB.PITRWithRestore
                     }
                     catch (Exception ex)
                     {
-                        this.TrackFailedBatchesOfBackups(containerName, fileName, compressedByteArray, ex);
+                        this.TrackFailedBatchesOfBackups(containerName, fileName, docs.Count, compressedByteArray, ex);
                     }
                 }
                 else
                 {
-                    this.TrackFailedBatchesOfBackups(containerName, fileName, compressedByteArray, null);
+                    this.TrackFailedBatchesOfBackups(containerName, fileName, docs.Count, compressedByteArray, null);
                 }
             }
             else
@@ -140,7 +140,7 @@ namespace Microsoft.CosmosDB.PITRWithRestore
                 }
                 catch (Exception ex)
                 {
-                    this.TrackFailedBatchesOfBackups(containerName, fileName, compressedByteArray, ex);
+                    this.TrackFailedBatchesOfBackups(containerName, fileName, docs.Count, compressedByteArray, ex);
                 }
             }
         }
@@ -249,21 +249,29 @@ namespace Microsoft.CosmosDB.PITRWithRestore
         /// <param name="containerName">Container within which this backup should have been persisted</param>
         /// <param name="docs">Batch of created/updated documents from ChangeFeedProcessor which could not be backed up to the Azure Blob Storage Account</param>
         /// <param name="fileName">Name of the blob file which was not successfully persisted</param>
+        /// <param name="docCountInBackup">Number of documents in the compressed backup</param>
         /// <param name="ex">Exception which caused this backup to not be persisted in the specified blob storage account</param>
-        private void TrackFailedBatchesOfBackups(string containerName, string fileName, byte[] docs, Exception ex)
+        private void TrackFailedBatchesOfBackups(string containerName, string fileName, int docCountInBackup, byte[] docs, Exception ex)
         {
             Console.WriteLine("Tracking failed backups to Cosmos DB collecion tracking failures during backup process");
 
             string backupFailureDatabaseName = ConfigurationManager.AppSettings["BackupFailureDatabaseName"];
             string backupFailureCollectionName = ConfigurationManager.AppSettings["BackupFailureCollectionName"];
-            string convertedByteArray = Encoding.UTF8.GetString(docs, 0, docs.Length);
-
+            
             Uri documentsFeedLink = UriFactory.CreateDocumentCollectionUri(backupFailureDatabaseName, backupFailureCollectionName);
+
+            // Convert the Gzip compressed byte array into a string, to persist in the BackupFailureCollection
+            StringBuilder sB = new System.Text.StringBuilder(docs.Length);
+            foreach (byte item in docs)
+            {
+                sB.Append((char)item);
+            }
 
             BackupFailureDocument backupFailureDocument = new BackupFailureDocument();
             backupFailureDocument.ContainerName = containerName;
             backupFailureDocument.Id = fileName;
-            backupFailureDocument.CompressedByteArray = convertedByteArray;
+            backupFailureDocument.CompressedByteArray = sB.ToString();
+            backupFailureDocument.DocumentCountInCompressedBackup = docCountInBackup;
 
             if (ex != null)
             {

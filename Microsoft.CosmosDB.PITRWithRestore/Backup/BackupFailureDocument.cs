@@ -35,6 +35,12 @@ namespace Microsoft.CosmosDB.PITRWithRestore.Backup
         public string ExceptionMessage { get; set; }
 
         /// <summary>
+        /// The number of documents in this compressed backup that was not successfully written to the Blob Storage Account
+        /// </summary>
+        [JsonProperty(PropertyName = "documentCountInCompressedBackup")]
+        public int DocumentCountInCompressedBackup { get; set; }
+
+        /// <summary>
         /// The exception type
         /// </summary>
         [JsonProperty(PropertyName = "exceptionType")]

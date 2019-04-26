@@ -1,0 +1,1917 @@
+<?xml version="1.0"?>
+<doc>
+    <assembly>
+        <name>Microsoft.Azure.Documents.ChangeFeedProcessor</name>
+    </assembly>
+    <members>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.Bootstrapping.PartitionSynchronizer.CreateLeasesAsync(System.Collections.Generic.HashSet{System.String})">
+            <summary>
+            Creates leases if they do not exist. This might happen on initial start or if some lease was unexpectedly lost.
+            Leases are created without the continuation token. It means partitions will be read according to 'From Beginning' or
+            'From current time'.
+            Same applies also to split partitions. We do not search for parent lease and take continuation token since this might end up
+            of reprocessing all the events since the split.
+            </summary>
+        </member>
+        <member name="T:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedProcessorBuilder">
+             <summary>
+             Provides a flexible way to to create an instance of <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.PartitionManagement.IChangeFeedProcessor"/> with custom set of parameters.
+             </summary>
+             <example>
+             <code language="C#">
+             <![CDATA[
+             // Observer.cs
+             namespace Sample
+             {
+                 using System;
+                 using System.Collections.Generic;
+                 using System.Threading;
+                 using System.Threading.Tasks;
+                 using Microsoft.Azure.Documents;
+                 using Microsoft.Azure.Documents.ChangeFeedProcessor.FeedProcessing;
+            
+                 class SampleObserver : IChangeFeedObserver
+                 {
+                     public Task CloseAsync(IChangeFeedObserverContext context, ChangeFeedObserverCloseReason reason)
+                     {
+                         return Task.CompletedTask;  // Note: requires targeting .Net 4.6+.
+                     }
+            
+                     public Task OpenAsync(IChangeFeedObserverContext context)
+                     {
+                         return Task.CompletedTask;
+                     }
+            
+                     public Task ProcessChangesAsync(IChangeFeedObserverContext context, IReadOnlyList<Document> docs, CancellationToken cancellationToken)
+                     {
+                         Console.WriteLine("ProcessChangesAsync: partition {0}, {1} docs", context.PartitionKeyRangeId, docs.Count);
+                         return Task.CompletedTask;
+                     }
+                 }
+             }
+            
+             // Main.cs
+             namespace Sample
+             {
+                 using System;
+                 using System.Threading.Tasks;
+                 using Microsoft.Azure.Documents.ChangeFeedProcessor;
+                 using Microsoft.Azure.Documents.ChangeFeedProcessor.Logging;
+            
+                 class ChangeFeedProcessorSample
+                 {
+                     public static void Run()
+                     {
+                         RunAsync().Wait();
+                     }
+            
+                     static async Task RunAsync()
+                     {
+                         DocumentCollectionInfo feedCollectionInfo = new DocumentCollectionInfo()
+                         {
+                             DatabaseName = "DatabaseName",
+                             CollectionName = "MonitoredCollectionName",
+                             Uri = new Uri("https://sampleservice.documents.azure.com:443/"),
+                             MasterKey = "-- the auth key"
+                         };
+            
+                         DocumentCollectionInfo leaseCollectionInfo = new DocumentCollectionInfo()
+                         {
+                             DatabaseName = "DatabaseName",
+                             CollectionName = "leases",
+                             Uri = new Uri("https://sampleservice.documents.azure.com:443/"),
+                             MasterKey = "-- the auth key"
+                         };
+            
+                         var builder = new ChangeFeedProcessorBuilder();
+                         var processor = await builder
+                             .WithHostName("SampleHost")
+                             .WithFeedCollection(feedCollectionInfo)
+                             .WithLeaseCollection(leaseCollectionInfo)
+                             .WithObserver<SampleObserver>()
+                             .BuildAsync();
+            
+                         await processor.StartAsync();
+            
+                         Console.WriteLine("Change Feed Processor started. Press <Enter> key to stop...");
+                         Console.ReadLine();
+            
+                         await processor.StopAsync();
+                     }
+                 }
+             }
+             ]]>
+             </code>
+             </example>
+        </member>
+        <member name="P:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedProcessorBuilder.LeaseStoreManager">
+            <summary>
+            Gets the lease manager.
+            </summary>
+            <remarks>
+            Internal for testing only, otherwise it would be private.
+            </remarks>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedProcessorBuilder.WithHostName(System.String)">
+            <summary>
+            Sets the Host name.
+            </summary>
+            <param name="hostName">Name to be used for the host. When using multiple hosts, each host must have a unique name.</param>
+            <returns>The instance of <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedProcessorBuilder"/> to use.</returns>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedProcessorBuilder.WithFeedCollection(Microsoft.Azure.Documents.ChangeFeedProcessor.DocumentCollectionInfo)">
+            <summary>
+            Sets the <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.DocumentCollectionInfo"/> of the collection to listen for changes.
+            </summary>
+            <param name="feedCollectionLocation"><see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.DocumentCollectionInfo"/> of the collection to listen for changes</param>
+            <returns>The instance of <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedProcessorBuilder"/> to use.</returns>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedProcessorBuilder.WithFeedDocumentClient(Microsoft.Azure.Documents.Client.DocumentClient)">
+            <summary>
+            Sets an existing <see cref="T:Microsoft.Azure.Documents.Client.DocumentClient"/> to be used to read from the monitored collection.
+            </summary>
+            <param name="feedDocumentClient">The instance of <see cref="T:Microsoft.Azure.Documents.Client.DocumentClient"/> to use.</param>
+            <returns>The instance of <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedProcessorBuilder"/> to use.</returns>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedProcessorBuilder.WithFeedDocumentClient(Microsoft.Azure.Documents.ChangeFeedProcessor.DataAccess.IChangeFeedDocumentClient)">
+            <summary>
+            Sets an existing <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.DataAccess.IChangeFeedDocumentClient"/> to be used to read from the monitored collection.
+            </summary>
+            <param name="feedDocumentClient">The instance of <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.DataAccess.IChangeFeedDocumentClient"/> to use.</param>
+            <returns>The instance of <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedProcessorBuilder"/> to use.</returns>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedProcessorBuilder.WithProcessorOptions(Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedProcessorOptions)">
+            <summary>
+            Sets the <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedProcessorOptions"/> to be used by this instance of <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.PartitionManagement.IChangeFeedProcessor"/>.
+            </summary>
+            <param name="changeFeedProcessorOptions">The instance of <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedProcessorOptions"/> to use.</param>
+            <returns>The instance of <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedProcessorBuilder"/> to use.</returns>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedProcessorBuilder.WithObserverFactory(Microsoft.Azure.Documents.ChangeFeedProcessor.FeedProcessing.IChangeFeedObserverFactory)">
+            <summary>
+            Sets the <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.FeedProcessing.IChangeFeedObserverFactory"/> to be used to generate <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.IChangeFeedObserver"/>
+            </summary>
+            <param name="observerFactory">The instance of <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.FeedProcessing.IChangeFeedObserverFactory"/> to use.</param>
+            <returns>The instance of <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedProcessorBuilder"/> to use.</returns>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedProcessorBuilder.WithObserver``1">
+            <summary>
+            Sets an existing <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.IChangeFeedObserver"/> type to be used by a <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.FeedProcessing.IChangeFeedObserverFactory"/> to process changes.
+            </summary>
+            <typeparam name="T">Type of the <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.IChangeFeedObserver"/>.</typeparam>
+            <returns>The instance of <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedProcessorBuilder"/> to use.</returns>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedProcessorBuilder.WithDatabaseResourceId(System.String)">
+            <summary>
+            Sets the Database Resource Id of the monitored collection.
+            </summary>
+            <param name="databaseResourceId">Database Resource Id.</param>
+            <returns>The instance of <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedProcessorBuilder"/> to use.</returns>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedProcessorBuilder.WithCollectionResourceId(System.String)">
+            <summary>
+            Sets the Collection Resource Id of the monitored collection.
+            </summary>
+            <param name="collectionResourceId">Collection Resource Id.</param>
+            <returns>The instance of <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedProcessorBuilder"/> to use.</returns>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedProcessorBuilder.WithLeaseCollection(Microsoft.Azure.Documents.ChangeFeedProcessor.DocumentCollectionInfo)">
+            <summary>
+            Sets the <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.DocumentCollectionInfo"/> of the collection to use for leases.
+            </summary>
+            <param name="leaseCollectionLocation">The instance of a <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.DocumentCollectionInfo"/> to use.</param>
+            <returns>The instance of <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedProcessorBuilder"/> to use.</returns>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedProcessorBuilder.WithLeaseDocumentClient(Microsoft.Azure.Documents.Client.DocumentClient)">
+            <summary>
+            Sets an existing <see cref="T:Microsoft.Azure.Documents.Client.DocumentClient"/> to be used to read from the leases collection.
+            </summary>
+            <param name="leaseDocumentClient">The instance of <see cref="T:Microsoft.Azure.Documents.Client.DocumentClient"/> to use.</param>
+            <returns>The instance of <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedProcessorBuilder"/> to use.</returns>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedProcessorBuilder.WithLeaseDocumentClient(Microsoft.Azure.Documents.ChangeFeedProcessor.DataAccess.IChangeFeedDocumentClient)">
+            <summary>
+            Sets an existing <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.DataAccess.IChangeFeedDocumentClient"/> to be used to read from the leases collection.
+            </summary>
+            <param name="leaseDocumentClient">The instance of <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.DataAccess.IChangeFeedDocumentClient"/> to use.</param>
+            <returns>The instance of <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedProcessorBuilder"/> to use.</returns>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedProcessorBuilder.WithPartitionLoadBalancingStrategy(Microsoft.Azure.Documents.ChangeFeedProcessor.PartitionManagement.IParitionLoadBalancingStrategy)">
+            <summary>
+            Sets the <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.PartitionManagement.IParitionLoadBalancingStrategy"/> to be used for partition load balancing
+            </summary>
+            <param name="strategy">The instance of <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.PartitionManagement.IParitionLoadBalancingStrategy"/> to use.</param>
+            <returns>The instance of <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedProcessorBuilder"/> to use.</returns>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedProcessorBuilder.WithPartitionProcessorFactory(Microsoft.Azure.Documents.ChangeFeedProcessor.FeedProcessing.IPartitionProcessorFactory)">
+            <summary>
+            Sets the <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.FeedProcessing.IPartitionProcessorFactory"/> to be used to create <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.FeedProcessing.IPartitionProcessor"/> for partition processing.
+            </summary>
+            <param name="partitionProcessorFactory">The instance of <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.FeedProcessing.IPartitionProcessorFactory"/> to use.</param>
+            <returns>The instance of <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedProcessorBuilder"/> to use.</returns>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedProcessorBuilder.WithLeaseStoreManager(Microsoft.Azure.Documents.ChangeFeedProcessor.LeaseManagement.ILeaseStoreManager)">
+            <summary>
+            Sets the <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.LeaseManagement.ILeaseStoreManager"/> to be used to manage leases.
+            </summary>
+            <param name="leaseStoreManager">The instance of <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.LeaseManagement.ILeaseStoreManager"/> to use.</param>
+            <returns>The instance of <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedProcessorBuilder"/> to use.</returns>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedProcessorBuilder.WithHealthMonitor(Microsoft.Azure.Documents.ChangeFeedProcessor.Monitoring.IHealthMonitor)">
+            <summary>
+            Sets the <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.Monitoring.IHealthMonitor"/> to be used to monitor unhealthiness situation.
+            </summary>
+            <param name="healthMonitor">The instance of <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.Monitoring.IHealthMonitor"/> to use.</param>
+            <returns>The instance of <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedProcessorBuilder"/> to use.</returns>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedProcessorBuilder.BuildAsync">
+            <summary>
+            Builds a new instance of the <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.PartitionManagement.IChangeFeedProcessor"/> with the specified configuration.
+            </summary>
+            <returns>An instance of <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.PartitionManagement.IChangeFeedProcessor"/>.</returns>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedProcessorBuilder.BuildEstimatorAsync">
+            <summary>
+            Builds a new instance of the <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.PartitionManagement.IRemainingWorkEstimator"/> to estimate pending work with the specified configuration.
+            </summary>
+            <returns>An instance of <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.PartitionManagement.IRemainingWorkEstimator"/>.</returns>
+        </member>
+        <member name="T:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedProcessorOptions">
+            <summary>
+            Options to control various aspects of partition distribution happening within <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedProcessor"/> instance.
+            </summary>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedProcessorOptions.#ctor">
+            <summary>Initializes a new instance of the <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedProcessorOptions" /> class.</summary>
+        </member>
+        <member name="P:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedProcessorOptions.LeaseRenewInterval">
+            <summary>
+            Gets or sets renew interval for all leases for partitions currently held by <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedProcessor"/> instance.
+            </summary>
+        </member>
+        <member name="P:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedProcessorOptions.LeaseAcquireInterval">
+            <summary>
+            Gets or sets the interval to kick off a task to compute if partitions are distributed evenly among known host instances.
+            </summary>
+        </member>
+        <member name="P:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedProcessorOptions.LeaseExpirationInterval">
+            <summary>
+            Gets or sets the interval for which the lease is taken on a lease representing a partition. If the lease is not renewed within this
+            interval, it will cause it to expire and ownership of the partition will move to another <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedProcessor"/> instance.
+            </summary>
+        </member>
+        <member name="P:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedProcessorOptions.FeedPollDelay">
+            <summary>
+            Gets or sets the delay in between polling a partition for new changes on the feed, after all current changes are drained.
+            </summary>
+        </member>
+        <member name="P:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedProcessorOptions.CheckpointFrequency">
+            <summary>
+            Gets or sets the frequency how often to checkpoint leases.
+            </summary>
+        </member>
+        <member name="P:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedProcessorOptions.LeasePrefix">
+            <summary>
+            Gets or sets a prefix to be used as part of the lease id. This can be used to support multiple instances of <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedProcessor"/>
+            instances pointing at the same feed while using the same auxiliary collection.
+            </summary>
+        </member>
+        <member name="P:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedProcessorOptions.MaxItemCount">
+            <summary>
+            Gets or sets the maximum number of items to be returned in the enumeration operation in the Azure Cosmos DB service.
+            </summary>
+        </member>
+        <member name="P:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedProcessorOptions.StartContinuation">
+            <summary>
+            Gets or sets the start request continuation token to start looking for changes after.
+            </summary>
+            <remarks>
+            This is only used when lease store is not initialized and is ignored if a lease for partition exists and has continuation token.
+            If this is specified, both StartTime and StartFromBeginning are ignored.
+            </remarks>
+            <seealso cref="P:Microsoft.Azure.Documents.Client.ChangeFeedOptions.RequestContinuation"/>
+        </member>
+        <member name="P:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedProcessorOptions.StartTime">
+            <summary>
+            Gets or sets the time (exclusive) to start looking for changes after.
+            </summary>
+            <remarks>
+            This is only used when:
+            (1) Lease store is not initialized and is ignored if a lease for partition exists and has continuation token.
+            (2) StartContinuation is not specified.
+            If this is specified, StartFromBeginning is ignored.
+            </remarks>
+            <seealso cref="P:Microsoft.Azure.Documents.Client.ChangeFeedOptions.StartTime"/>
+        </member>
+        <member name="P:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedProcessorOptions.StartFromBeginning">
+            <summary>
+            Gets or sets a value indicating whether change feed in the Azure Cosmos DB service should start from beginning (true) or from current (false).
+            By default it's start from current (false).
+            </summary>
+            <remarks>
+            This is only used when:
+            (1) Lease store is not initialized and is ignored if a lease for partition exists and has continuation token.
+            (2) StartContinuation is not specified.
+            (3) StartTime is not specified.
+            </remarks>
+            <seealso cref="P:Microsoft.Azure.Documents.Client.ChangeFeedOptions.StartFromBeginning"/>
+        </member>
+        <member name="P:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedProcessorOptions.SessionToken">
+            <summary>
+            Gets or sets the session token for use with session consistency in the Azure Cosmos DB service.
+            </summary>
+        </member>
+        <member name="P:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedProcessorOptions.MinPartitionCount">
+            <summary>
+            Gets or sets the minimum partition count for the host.
+            This can be used to increase the number of partitions for the host and thus override equal distribution (which is the default) of leases between hosts.
+            </summary>
+        </member>
+        <member name="P:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedProcessorOptions.MaxPartitionCount">
+            <summary>
+            Gets or sets the maximum number of partitions the host can serve.
+            This can be used property to limit the number of partitions for the host and thus override equal distribution (which is the default) of leases between hosts.
+            Default is 0 (unlimited).
+            </summary>
+        </member>
+        <member name="P:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedProcessorOptions.DiscardExistingLeases">
+            <summary>
+            Gets or sets a value indicating whether on start of the host all existing leases should be deleted and the host should start from scratch.
+            </summary>
+        </member>
+        <member name="P:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedProcessorOptions.QueryPartitionsMaxBatchSize">
+            <summary>
+            Gets or sets the Batch size of query partitions API.
+            </summary>
+        </member>
+        <member name="P:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedProcessorOptions.DegreeOfParallelism">
+            <summary>
+            Gets maximum number of tasks to use for auxiliary calls.
+            </summary>
+        </member>
+        <member name="T:Microsoft.Azure.Documents.ChangeFeedProcessor.CheckpointFrequency">
+            <summary>
+            Specifies the frequency of lease event. The event will trigger when either of conditions is satisfied.
+            </summary>
+        </member>
+        <member name="P:Microsoft.Azure.Documents.ChangeFeedProcessor.CheckpointFrequency.ExplicitCheckpoint">
+            <summary>
+            Gets or sets a value indicating whether explicit checkpointing is enabled. By default false. Setting to true means changefeed host will never checkpoint. Client code needs to explicitly checkpoint via <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.IPartitionCheckpointer"/>
+            </summary>
+        </member>
+        <member name="P:Microsoft.Azure.Documents.ChangeFeedProcessor.CheckpointFrequency.ProcessedDocumentCount">
+            <summary>
+            Gets or sets the value that specifies to checkpoint every specified number of docs.
+            </summary>
+        </member>
+        <member name="P:Microsoft.Azure.Documents.ChangeFeedProcessor.CheckpointFrequency.TimeInterval">
+            <summary>
+            Gets or sets the value that specifies to checkpoint every specified time interval.
+            </summary>
+        </member>
+        <member name="T:Microsoft.Azure.Documents.ChangeFeedProcessor.DataAccess.ChangeFeedDocumentClient">
+            <summary>
+            Adapts <see cref="T:Microsoft.Azure.Documents.Client.DocumentClient"/> to <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.DataAccess.IChangeFeedDocumentClient"/>.
+            </summary>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.DataAccess.ChangeFeedDocumentClient.#ctor(Microsoft.Azure.Documents.Client.DocumentClient)">
+            <summary>
+            Initializes a new instance of the <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.DataAccess.ChangeFeedDocumentClient"/> class.
+            </summary>
+            <param name="documentClient">Existing <see cref="T:Microsoft.Azure.Documents.Client.DocumentClient"/>.</param>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.DataAccess.ChangeFeedDocumentClient.ReadPartitionKeyRangeFeedAsync(System.String,Microsoft.Azure.Documents.Client.FeedOptions)">
+            <summary>
+            Reads the list of Partition Key Ranges.
+            </summary>
+            <param name="partitionKeyRangesOrCollectionLink">Partition Key Ranges or Collection Self Link.</param>
+            <param name="options">The <see cref="T:Microsoft.Azure.Documents.Client.FeedOptions"/>for this request.</param>
+            <returns>A list of <see cref="T:Microsoft.Azure.Documents.PartitionKeyRange"/>.</returns>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.DataAccess.ChangeFeedDocumentClient.CreateDocumentChangeFeedQuery(System.String,Microsoft.Azure.Documents.Client.ChangeFeedOptions)">
+            <summary>
+            Creates a query to the Change Feed.
+            </summary>
+            <param name="collectionLink">Collection Self Link.</param>
+            <param name="feedOptions">An instance of <see cref="T:Microsoft.Azure.Documents.Client.FeedOptions"/>.</param>
+            <returns>A query response to transverse.</returns>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.DataAccess.ChangeFeedDocumentClient.ReadDatabaseAsync(System.Uri,Microsoft.Azure.Documents.Client.RequestOptions)">
+            <summary>
+            Reads the database.
+            </summary>
+            <param name="databaseUri">Database Uri.</param>
+            <param name="options">The <see cref="T:Microsoft.Azure.Documents.Client.RequestOptions"/>for this request.</param>
+            <returns>A response containing a <see cref="T:Microsoft.Azure.Documents.Database"/>.</returns>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.DataAccess.ChangeFeedDocumentClient.ReadDocumentCollectionAsync(System.Uri,Microsoft.Azure.Documents.Client.RequestOptions)">
+            <summary>
+            Reads the collection.
+            </summary>
+            <param name="documentCollectionUri">Collection Uri.</param>
+            <param name="options">The <see cref="T:Microsoft.Azure.Documents.Client.RequestOptions"/>for this request.</param>
+            <returns>A response containing a <see cref="T:Microsoft.Azure.Documents.DocumentCollection"/>.</returns>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.DataAccess.ChangeFeedDocumentClient.CreateDocumentAsync(System.String,System.Object,Microsoft.Azure.Documents.Client.RequestOptions,System.Boolean,System.Threading.CancellationToken)">
+            <summary>
+            Creates the document.
+            </summary>
+            <param name="documentsFeedOrDatabaseLink">Collection Self Link.</param>
+            <param name="document">Document to store.</param>
+            <param name="options">The <see cref="T:Microsoft.Azure.Documents.Client.RequestOptions"/>for this request.</param>
+            <param name="disableAutomaticIdGeneration">Disables the automatic id generation, If this is True the system will throw an exception if the id property is missing from the Document.</param>
+            <param name="cancellationToken">A <see cref="T:System.Threading.CancellationToken"/>that can be used by other objects or threads to receive notice of cancellation.</param>
+            <returns>A response containing a <see cref="T:Microsoft.Azure.Documents.Document"/>.</returns>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.DataAccess.ChangeFeedDocumentClient.DeleteDocumentAsync(System.Uri,Microsoft.Azure.Documents.Client.RequestOptions,System.Threading.CancellationToken)">
+            <summary>
+            Deletes the document.
+            </summary>
+            <param name="documentUri">Document Uri.</param>
+            <param name="options">The <see cref="T:Microsoft.Azure.Documents.Client.RequestOptions"/>for this request.</param>
+            <param name="cancellationToken">A <see cref="T:System.Threading.CancellationToken"/>that can be used by other objects or threads to receive notice of cancellation.</param>
+            <returns>A response containing a <see cref="T:Microsoft.Azure.Documents.Document"/>.</returns>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.DataAccess.ChangeFeedDocumentClient.ReplaceDocumentAsync(System.Uri,System.Object,Microsoft.Azure.Documents.Client.RequestOptions,System.Threading.CancellationToken)">
+            <summary>
+            Updates the document.
+            </summary>
+            <param name="documentUri">Document Uri of the document to update.</param>
+            <param name="document">Updated document.</param>
+            <param name="options">The <see cref="T:Microsoft.Azure.Documents.Client.RequestOptions"/>for this request.</param>
+            <param name="cancellationToken">A <see cref="T:System.Threading.CancellationToken"/>that can be used by other objects or threads to receive notice of cancellation.</param>
+            <returns>A response containing a <see cref="T:Microsoft.Azure.Documents.Document"/>.</returns>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.DataAccess.ChangeFeedDocumentClient.ReadDocumentAsync(System.Uri,Microsoft.Azure.Documents.Client.RequestOptions,System.Threading.CancellationToken)">
+            <summary>
+            Reads a single document.
+            </summary>
+            <param name="documentUri">Document Uri to read.</param>
+            <param name="options">The <see cref="T:Microsoft.Azure.Documents.Client.RequestOptions"/>for this request.</param>
+            <param name="cancellationToken">A <see cref="T:System.Threading.CancellationToken"/>that can be used by other objects or threads to receive notice of cancellation.</param>
+            <returns>A response containing a <see cref="T:Microsoft.Azure.Documents.Document"/>.</returns>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.DataAccess.ChangeFeedDocumentClient.CreateDocumentQuery``1(System.String,Microsoft.Azure.Documents.SqlQuerySpec,Microsoft.Azure.Documents.Client.FeedOptions)">
+            <summary>
+            Creates an instance of <see cref="T:System.Linq.IQueryable"/>.
+            </summary>
+            <typeparam name="T">Document type.</typeparam>
+            <param name="documentCollectionUri">Collection Uri.</param>
+            <param name="querySpec">Instance of <see cref="T:Microsoft.Azure.Documents.SqlQuerySpec"/> to execute.</param>
+            <param name="feedOptions">Options for the query.</param>
+            <returns>An <see cref="T:System.Linq.IQueryable"/>.</returns>
+        </member>
+        <member name="T:Microsoft.Azure.Documents.ChangeFeedProcessor.DataAccess.IChangeFeedDocumentClient">
+            <summary>
+            The IDocumentClient interface captures the API required to handle change feed processing logic
+            </summary>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.DataAccess.IChangeFeedDocumentClient.ReadPartitionKeyRangeFeedAsync(System.String,Microsoft.Azure.Documents.Client.FeedOptions)">
+            <summary>
+            Reads the feed (sequence) of <see cref="T:Microsoft.Azure.Documents.PartitionKeyRange"/> for a database account from the Azure Cosmos DB service as an asynchronous operation.
+            </summary>
+            <param name="partitionKeyRangesOrCollectionLink">The link of the resources to be read, or owner collection link, SelfLink or AltLink. E.g. /dbs/db_rid/colls/coll_rid/pkranges</param>
+            <param name="options">The request options for the request.</param>
+            <returns>
+            A <see cref="N:System.Threading.Tasks"/> containing a <see cref="T:Microsoft.Azure.Documents.Client.IResourceResponse`1"/> which wraps a <see cref="T:Microsoft.Azure.Documents.Database"/> containing the read resource record.
+            </returns>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.DataAccess.IChangeFeedDocumentClient.CreateDocumentChangeFeedQuery(System.String,Microsoft.Azure.Documents.Client.ChangeFeedOptions)">
+            <summary>
+            Method to create a change feed query for documents.
+            </summary>
+            <param name="collectionLink">Specifies the collection to read documents from.</param>
+            <param name="feedOptions">The options for processing the query results feed.</param>
+            <returns>the query result set.</returns>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.DataAccess.IChangeFeedDocumentClient.ReadDatabaseAsync(System.Uri,Microsoft.Azure.Documents.Client.RequestOptions)">
+            <summary>
+            Reads a <see cref="T:Microsoft.Azure.Documents.Database"/> as an asynchronous operation in the Azure DocumentDB database service.
+            </summary>
+            <param name="databaseUri">The link of the Database resource to be read.</param>
+            <param name="options">The <see cref="T:Microsoft.Azure.Documents.Client.RequestOptions"/>for this request.</param>
+            <returns>
+            A <see cref="N:System.Threading.Tasks"/> containing a <see cref="T:Microsoft.Azure.Documents.Client.IResourceResponse`1"/> which wraps a <see cref="T:Microsoft.Azure.Documents.Database"/> containing the read resource record.
+            </returns>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.DataAccess.IChangeFeedDocumentClient.ReadDocumentCollectionAsync(System.Uri,Microsoft.Azure.Documents.Client.RequestOptions)">
+            <summary>
+            Reads a <see cref="T:Microsoft.Azure.Documents.DocumentCollection"/> as an asynchronous operation in the Azure DocumentDB database service.
+            </summary>
+            <param name="documentCollectionUri">The link for the DocumentCollection to be read.</param>
+            <param name="options">The <see cref="T:Microsoft.Azure.Documents.Client.RequestOptions"/>for this request.</param>
+            <returns>
+            A <see cref="N:System.Threading.Tasks"/> containing a <see cref="T:Microsoft.Azure.Documents.Client.IResourceResponse`1"/> which wraps a <see cref="T:Microsoft.Azure.Documents.DocumentCollection"/> containing the read resource record.
+            </returns>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.DataAccess.IChangeFeedDocumentClient.CreateDocumentAsync(System.String,System.Object,Microsoft.Azure.Documents.Client.RequestOptions,System.Boolean,System.Threading.CancellationToken)">
+            <summary>
+            Creates a Document as an asychronous operation in the Azure DocumentDB database service.
+            </summary>
+            <param name="collectionLink">The link of the <see cref="T:Microsoft.Azure.Documents.DocumentCollection"/> to create the document in. E.g. dbs/db_rid/colls/coll_rid/ </param>
+            <param name="document">The document object to create.</param>
+            <param name="options">The <see cref="T:Microsoft.Azure.Documents.Client.RequestOptions"/>for this request.</param>
+            <param name="disableAutomaticIdGeneration">Disables the automatic id generation, If this is True the system will throw an exception if the id property is missing from the Document.</param>
+            <param name="cancellationToken">A <see cref="T:System.Threading.CancellationToken"/>that can be used by other objects or threads to receive notice of cancellation.</param>
+            <returns>A <see cref="N:System.Threading.Tasks"/> containing a <see cref="T:Microsoft.Azure.Documents.Client.IResourceResponse`1"/> which will contain information about the request issued.</returns>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.DataAccess.IChangeFeedDocumentClient.DeleteDocumentAsync(System.Uri,Microsoft.Azure.Documents.Client.RequestOptions,System.Threading.CancellationToken)">
+            <summary>
+            Delete a <see cref="T:Microsoft.Azure.Documents.Document"/> as an asynchronous operation in the Azure DocumentDB database service.
+            </summary>
+            <param name="documentUri">The link of the <see cref="T:Microsoft.Azure.Documents.Document"/> to delete. E.g. dbs/db_rid/colls/col_rid/docs/doc_rid/ </param>
+            <param name="options">The <see cref="T:Microsoft.Azure.Documents.Client.RequestOptions"/>for this request.</param>
+            <param name="cancellationToken">A <see cref="T:System.Threading.CancellationToken"/>that can be used by other objects or threads to receive notice of cancellation.</param>
+            <returns>A <see cref="N:System.Threading.Tasks"/> containing a <see cref="T:Microsoft.Azure.Documents.Client.IResourceResponse`1"/> which will contain information about the request issued.</returns>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.DataAccess.IChangeFeedDocumentClient.ReplaceDocumentAsync(System.Uri,System.Object,Microsoft.Azure.Documents.Client.RequestOptions,System.Threading.CancellationToken)">
+            <summary>
+            Replaces a <see cref="T:Microsoft.Azure.Documents.Document"/> as an asynchronous operation in the Azure DocumentDB database service.
+            </summary>
+            <param name="documentUri">The link of the document to be updated. E.g. dbs/db_rid/colls/col_rid/docs/doc_rid/ </param>
+            <param name="document">The updated <see cref="T:Microsoft.Azure.Documents.Document"/> to replace the existing resource with.</param>
+            <param name="options">The <see cref="T:Microsoft.Azure.Documents.Client.RequestOptions"/>for this request.</param>
+            <param name="cancellationToken">A <see cref="T:System.Threading.CancellationToken"/>that can be used by other objects or threads to receive notice of cancellation.</param>
+            <returns>
+            A <see cref="N:System.Threading.Tasks"/> containing a <see cref="T:Microsoft.Azure.Documents.Client.IResourceResponse`1"/> which wraps a <see cref="T:Microsoft.Azure.Documents.Document"/> containing the updated resource record.
+            </returns>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.DataAccess.IChangeFeedDocumentClient.ReadDocumentAsync(System.Uri,Microsoft.Azure.Documents.Client.RequestOptions,System.Threading.CancellationToken)">
+            <summary>
+            Reads a <see cref="T:Microsoft.Azure.Documents.Document"/> as an asynchronous operation in the Azure DocumentDB database service.
+            </summary>
+            <param name="documentUri">The link for the document to be read.</param>
+            <param name="options">The <see cref="T:Microsoft.Azure.Documents.Client.RequestOptions"/>for this request.</param>
+            <param name="cancellationToken">A <see cref="T:System.Threading.CancellationToken"/>that can be used by other objects or threads to receive notice of cancellation.</param>
+            <returns>
+            A <see cref="N:System.Threading.Tasks"/> containing a <see cref="T:Microsoft.Azure.Documents.Client.IResourceResponse`1"/> which wraps a <see cref="T:Microsoft.Azure.Documents.Document"/> containing the read resource record.
+            </returns>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.DataAccess.IChangeFeedDocumentClient.CreateDocumentQuery``1(System.String,Microsoft.Azure.Documents.SqlQuerySpec,Microsoft.Azure.Documents.Client.FeedOptions)">
+            <summary>
+            Extension method to create a query for documents in the Azure DocumentDB database service.
+            </summary>
+            <typeparam name="T">The type of object to query.</typeparam>
+            <param name="documentCollectionUri">The URI of the document collection.</param>
+            <param name="querySpec">The sql query.</param>
+            <param name="feedOptions">Options for the query.</param>
+            <returns>The query result set.</returns>
+        </member>
+        <member name="T:Microsoft.Azure.Documents.ChangeFeedProcessor.DataAccess.IChangeFeedDocumentQuery`1">
+            <summary>
+            Provides methods to support change feed query pagination and asynchronous execution
+            </summary>
+            <typeparam name="T">Generic type of Document</typeparam>
+        </member>
+        <member name="P:Microsoft.Azure.Documents.ChangeFeedProcessor.DataAccess.IChangeFeedDocumentQuery`1.HasMoreResults">
+            <summary>
+            Gets a value indicating whether there are potentially additional results that can be
+            returned from the query in the Azure DocumentDB database service.
+            </summary>
+            <value>Boolean value representing if there are potentially additional results that can be
+            returned from the query.</value>
+            <remarks>Initially returns true. This value is set based on whether the last execution returned a continuation token.</remarks>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.DataAccess.IChangeFeedDocumentQuery`1.ExecuteNextAsync``1(System.Threading.CancellationToken)">
+            <summary>
+            Executes the query and retrieves the next page of results in the Azure DocumentDB database service.
+            </summary>
+            <typeparam name="TResult">The type of the object returned in the query result.</typeparam>
+            <param name="token">(Optional) The <see cref="T:System.Threading.CancellationToken" /> allows for notification that operations should be cancelled.</param>
+            <returns>The Task object for the asynchronous response from query execution.</returns>
+        </member>
+        <member name="F:Microsoft.Azure.Documents.ChangeFeedProcessor.DocDBErrors.SubStatusCode.PartitionKeyRangeGone">
+            <summary>
+            410: partition key range is gone
+            </summary>
+        </member>
+        <member name="F:Microsoft.Azure.Documents.ChangeFeedProcessor.DocDBErrors.SubStatusCode.Splitting">
+            <summary>
+            410: partition splitting
+            </summary>
+        </member>
+        <member name="F:Microsoft.Azure.Documents.ChangeFeedProcessor.DocDBErrors.SubStatusCode.ReadSessionNotAvailable">
+            <summary>
+            404: LSN in session token is higher
+            </summary>
+        </member>
+        <member name="T:Microsoft.Azure.Documents.ChangeFeedProcessor.DocumentCollectionInfo">
+            <summary>
+            Holds information specifying how to get Document collection.
+            </summary>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.DocumentCollectionInfo.#ctor">
+            <summary>
+            Initializes a new instance of the <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.DocumentCollectionInfo"/> class.
+            </summary>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.DocumentCollectionInfo.#ctor(Microsoft.Azure.Documents.ChangeFeedProcessor.DocumentCollectionInfo)">
+            <summary>
+            Initializes a new instance of the <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.DocumentCollectionInfo"/> class.
+            </summary>
+            <param name="other">The other <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.DocumentCollectionInfo"/> to copy settings from.</param>
+        </member>
+        <member name="P:Microsoft.Azure.Documents.ChangeFeedProcessor.DocumentCollectionInfo.Uri">
+            <summary>
+            Gets or sets the Uri of the Document service.
+            </summary>
+        </member>
+        <member name="P:Microsoft.Azure.Documents.ChangeFeedProcessor.DocumentCollectionInfo.MasterKey">
+            <summary>
+            Gets or sets the secret master key to connect to the Document service.
+            </summary>
+        </member>
+        <member name="P:Microsoft.Azure.Documents.ChangeFeedProcessor.DocumentCollectionInfo.DatabaseName">
+            <summary>
+            Gets or sets the name of the database the collection resides in.
+            </summary>
+        </member>
+        <member name="P:Microsoft.Azure.Documents.ChangeFeedProcessor.DocumentCollectionInfo.CollectionName">
+            <summary>
+            Gets or sets the name of the Document collection.
+            </summary>
+        </member>
+        <member name="P:Microsoft.Azure.Documents.ChangeFeedProcessor.DocumentCollectionInfo.ConsistencyLevel">
+            <summary>
+            Gets or sets the consistency level. Default is null which means it will be used a collection level consistency.
+            </summary>
+        </member>
+        <member name="P:Microsoft.Azure.Documents.ChangeFeedProcessor.DocumentCollectionInfo.ConnectionPolicy">
+            <summary>
+            Gets or sets the connection policy to connect to Document service.
+            </summary>
+        </member>
+        <member name="T:Microsoft.Azure.Documents.ChangeFeedProcessor.Exceptions.LeaseLostException">
+            <summary>
+            Exception occurred when lease is lost, that would typically happen when it is taken by another host. Other cases: communication failure, number of retries reached, lease not found.
+            </summary>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.Exceptions.LeaseLostException.#ctor">
+            <summary>
+            Initializes a new instance of the <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.Exceptions.LeaseLostException" /> class.
+            </summary>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.Exceptions.LeaseLostException.#ctor(Microsoft.Azure.Documents.ChangeFeedProcessor.PartitionManagement.ILease)">
+            <summary>
+            Initializes a new instance of the <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.Exceptions.LeaseLostException" /> class using the specified lease.
+            </summary>
+            <param name="lease">Instance of a lost lease.</param>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.Exceptions.LeaseLostException.#ctor(System.String)">
+            <summary>
+            Initializes a new instance of the <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.Exceptions.LeaseLostException" /> class using error message.
+            </summary>
+            <param name="message">The exception error message.</param>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.Exceptions.LeaseLostException.#ctor(System.String,System.Exception)">
+            <summary>
+            Initializes a new instance of the <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.Exceptions.LeaseLostException" /> class using error message and inner exception.
+            </summary>
+            <param name="message">The exception error message.</param>
+            <param name="innerException">The inner exception.</param>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.Exceptions.LeaseLostException.#ctor(Microsoft.Azure.Documents.ChangeFeedProcessor.PartitionManagement.ILease,System.Exception,System.Boolean)">
+            <summary>
+            Initializes a new instance of the <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.Exceptions.LeaseLostException" /> class using the specified lease, inner exception, and a flag indicating whether lease is gone.
+            </summary>
+            <param name="lease">Instance of a lost lease.</param>
+            <param name="innerException">The inner exception.</param>
+            <param name="isGone">Whether lease doesn't exist.</param>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.Exceptions.LeaseLostException.#ctor(System.Runtime.Serialization.SerializationInfo,System.Runtime.Serialization.StreamingContext)">
+            <summary>
+            Initializes a new instance of the <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.Exceptions.LeaseLostException" /> class using default values.
+            </summary>
+            <param name="info">The SerializationInfo object that holds serialized object data for the exception being thrown.</param>
+            <param name="context">The StreamingContext that contains contextual information about the source or destination.</param>
+        </member>
+        <member name="P:Microsoft.Azure.Documents.ChangeFeedProcessor.Exceptions.LeaseLostException.Lease">
+            <summary>
+            Gets the lost lease.
+            </summary>
+        </member>
+        <member name="P:Microsoft.Azure.Documents.ChangeFeedProcessor.Exceptions.LeaseLostException.IsGone">
+            <summary>
+            Gets a value indicating whether lease doesn't exist.
+            </summary>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.Exceptions.LeaseLostException.GetObjectData(System.Runtime.Serialization.SerializationInfo,System.Runtime.Serialization.StreamingContext)">
+            <summary>
+            Sets the System.Runtime.Serialization.SerializationInfo with information about the exception.
+            </summary>
+            <param name="info">The SerializationInfo object that holds serialized object data for the exception being thrown.</param>
+            <param name="context">The StreamingContext that contains contextual information about the source or destination.</param>
+        </member>
+        <member name="T:Microsoft.Azure.Documents.ChangeFeedProcessor.Exceptions.ObserverException">
+            <summary>
+            Exception occurred when an operation in an <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.IChangeFeedObserver"/> is running and throws by user code
+            </summary>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.Exceptions.ObserverException.#ctor(System.Exception)">
+            <summary>
+            Initializes a new instance of the <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.Exceptions.ObserverException" /> class using the specified internal exception.
+            </summary>
+            <param name="originalException"><see cref="T:System.Exception"/> thrown by the user code.</param>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.Exceptions.ObserverException.#ctor(System.Runtime.Serialization.SerializationInfo,System.Runtime.Serialization.StreamingContext)">
+            <summary>
+            Initializes a new instance of the <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.Exceptions.ObserverException" /> class using default values.
+            </summary>
+            <param name="info">The SerializationInfo object that holds serialized object data for the exception being thrown.</param>
+            <param name="context">The StreamingContext that contains contextual information about the source or destination.</param>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.Exceptions.ObserverException.GetObjectData(System.Runtime.Serialization.SerializationInfo,System.Runtime.Serialization.StreamingContext)">
+            <summary>
+            Sets the System.Runtime.Serialization.SerializationInfo with information about the exception.
+            </summary>
+            <param name="info">The SerializationInfo object that holds serialized object data for the exception being thrown.</param>
+            <param name="context">The StreamingContext that contains contextual information about the source or destination.</param>
+        </member>
+        <member name="T:Microsoft.Azure.Documents.ChangeFeedProcessor.Exceptions.PartitionException">
+            <summary>
+            General exception occurred during partition processing.
+            </summary>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.Exceptions.PartitionException.#ctor(System.String,System.String)">
+            <summary>
+            Initializes a new instance of the <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.Exceptions.PartitionException"/> class using error message and last continuation token.
+            </summary>
+            <param name="message">The exception error message.</param>
+            <param name="lastContinuation">Request continuation token.</param>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.Exceptions.PartitionException.#ctor(System.String,System.String,System.Exception)">
+            <summary>
+            Initializes a new instance of the <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.Exceptions.PartitionException" /> class using error message and inner exception.
+            </summary>
+            <param name="message">The exception error message.</param>
+            <param name="lastContinuation">Request continuation token.</param>
+            <param name="innerException">The inner exception.</param>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.Exceptions.PartitionException.#ctor(System.Runtime.Serialization.SerializationInfo,System.Runtime.Serialization.StreamingContext)">
+            <summary>
+            Initializes a new instance of the <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.Exceptions.PartitionException" /> class using default values.
+            </summary>
+            <param name="info">The SerializationInfo object that holds serialized object data for the exception being thrown.</param>
+            <param name="context">The StreamingContext that contains contextual information about the source or destination.</param>
+        </member>
+        <member name="P:Microsoft.Azure.Documents.ChangeFeedProcessor.Exceptions.PartitionException.LastContinuation">
+            <summary>
+            Gets the value of request continuation token.
+            </summary>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.Exceptions.PartitionException.GetObjectData(System.Runtime.Serialization.SerializationInfo,System.Runtime.Serialization.StreamingContext)">
+            <summary>
+            Sets the System.Runtime.Serialization.SerializationInfo with information about the exception.
+            </summary>
+            <param name="info">The SerializationInfo object that holds serialized object data for the exception being thrown.</param>
+            <param name="context">The StreamingContext that contains contextual information about the source or destination.</param>
+        </member>
+        <member name="T:Microsoft.Azure.Documents.ChangeFeedProcessor.Exceptions.PartitionNotFoundException">
+            <summary>
+            Exception occurred when partition wasn't found.
+            </summary>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.Exceptions.PartitionNotFoundException.#ctor(System.String,System.String)">
+            <summary>
+            Initializes a new instance of the <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.Exceptions.PartitionNotFoundException"/> class using error message and last continuation token.
+            </summary>
+            <param name="message">The exception error message.</param>
+            <param name="lastContinuation"> Request continuation token.</param>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.Exceptions.PartitionNotFoundException.#ctor(System.String,System.String,System.Exception)">
+            <summary>
+            Initializes a new instance of the <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.Exceptions.PartitionNotFoundException" /> class using error message and inner exception.
+            </summary>
+            <param name="message">The exception error message.</param>
+            <param name="lastContinuation">The last known continuation token</param>
+            <param name="innerException">The inner exception.</param>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.Exceptions.PartitionNotFoundException.#ctor(System.Runtime.Serialization.SerializationInfo,System.Runtime.Serialization.StreamingContext)">
+            <summary>
+            Initializes a new instance of the <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.Exceptions.PartitionNotFoundException" /> class using default values.
+            </summary>
+            <param name="info">The SerializationInfo object that holds serialized object data for the exception being thrown.</param>
+            <param name="context">The StreamingContext that contains contextual information about the source or destination.</param>
+        </member>
+        <member name="T:Microsoft.Azure.Documents.ChangeFeedProcessor.Exceptions.PartitionSplitException">
+            <summary>
+            Exception occurred during partition split.
+            </summary>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.Exceptions.PartitionSplitException.#ctor(System.String,System.String)">
+            <summary>
+            Initializes a new instance of the <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.Exceptions.PartitionSplitException"/> class using error message and last continuation token.
+            </summary>
+            <param name="message">The exception error message.</param>
+            <param name="lastContinuation"> Request continuation token.</param>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.Exceptions.PartitionSplitException.#ctor(System.Runtime.Serialization.SerializationInfo,System.Runtime.Serialization.StreamingContext)">
+            <summary>
+            Initializes a new instance of the <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.Exceptions.PartitionSplitException" /> class using default values.
+            </summary>
+            <param name="info">The SerializationInfo object that holds serialized object data for the exception being thrown.</param>
+            <param name="context">The StreamingContext that contains contextual information about the source or destination.</param>
+        </member>
+        <member name="T:Microsoft.Azure.Documents.ChangeFeedProcessor.FeedProcessing.ChangeFeedObserverCloseReason">
+            <summary>
+            The reason for the <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.FeedProcessing.IChangeFeedObserver"/> to close.
+            </summary>
+        </member>
+        <member name="F:Microsoft.Azure.Documents.ChangeFeedProcessor.FeedProcessing.ChangeFeedObserverCloseReason.Unknown">
+            <summary>
+            Unknown failure. This should never be sent to observers.
+            </summary>
+        </member>
+        <member name="F:Microsoft.Azure.Documents.ChangeFeedProcessor.FeedProcessing.ChangeFeedObserverCloseReason.Shutdown">
+            <summary>
+            The ChangeFeedEventHost is shutting down.
+            </summary>
+        </member>
+        <member name="F:Microsoft.Azure.Documents.ChangeFeedProcessor.FeedProcessing.ChangeFeedObserverCloseReason.ResourceGone">
+            <summary>
+            The resource, such as database or collection was removed.
+            </summary>
+        </member>
+        <member name="F:Microsoft.Azure.Documents.ChangeFeedProcessor.FeedProcessing.ChangeFeedObserverCloseReason.LeaseLost">
+            <summary>
+            Lease was lost due to expiration or load-balancing.
+            </summary>
+        </member>
+        <member name="F:Microsoft.Azure.Documents.ChangeFeedProcessor.FeedProcessing.ChangeFeedObserverCloseReason.ObserverError">
+            <summary>
+            IChangeFeedObserver threw an exception.
+            </summary>
+        </member>
+        <member name="F:Microsoft.Azure.Documents.ChangeFeedProcessor.FeedProcessing.ChangeFeedObserverCloseReason.LeaseGone">
+            <summary>
+            The lease is gone. This can be due to partition split.
+            </summary>
+        </member>
+        <member name="T:Microsoft.Azure.Documents.ChangeFeedProcessor.FeedProcessing.ChangeFeedObserverContext">
+            <summary>
+            The context passed to <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.IChangeFeedObserver"/> events.
+            </summary>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.FeedProcessing.ChangeFeedObserverContext.CheckpointAsync">
+            <summary>
+            Checkpoints progress of a stream. This method is valid only if manual checkpoint was configured.
+            Client may accept multiple change feed batches to process in parallel.
+            Once first N document processing was finished the client can call checkpoint on the last completed batches in the row.
+            In case of automatic checkpointing this is method throws.
+            </summary>
+            <exception cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.Exceptions.LeaseLostException">Thrown if other host acquired the lease or the lease was deleted</exception>
+        </member>
+        <member name="T:Microsoft.Azure.Documents.ChangeFeedProcessor.FeedProcessing.CheckpointerObserverFactory">
+            <summary>
+            Factory class used to create instance(s) of <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.IChangeFeedObserver"/>.
+            </summary>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.FeedProcessing.CheckpointerObserverFactory.#ctor(Microsoft.Azure.Documents.ChangeFeedProcessor.FeedProcessing.IChangeFeedObserverFactory,Microsoft.Azure.Documents.ChangeFeedProcessor.CheckpointFrequency)">
+            <summary>
+            Initializes a new instance of the <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.FeedProcessing.CheckpointerObserverFactory"/> class.
+            </summary>
+            <param name="observerFactory">Instance of Observer Factory</param>
+            <param name="checkpointFrequency">Defined <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.CheckpointFrequency"/></param>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.FeedProcessing.CheckpointerObserverFactory.CreateObserver">
+            <summary>
+            Creates a new instance of <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.IChangeFeedObserver"/>.
+            </summary>
+            <returns>Created instance of <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.IChangeFeedObserver"/>.</returns>
+        </member>
+        <member name="T:Microsoft.Azure.Documents.ChangeFeedProcessor.FeedProcessing.IChangeFeedObserver">
+            <summary>
+            This interface is used to deliver change events to document feed observers.
+            </summary>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.FeedProcessing.IChangeFeedObserver.OpenAsync(Microsoft.Azure.Documents.ChangeFeedProcessor.FeedProcessing.IChangeFeedObserverContext)">
+            <summary>
+            This is called when change feed observer is opened.
+            </summary>
+            <param name="context">The context specifying partition for this observer, etc.</param>
+            <returns>A Task to allow asynchronous execution.</returns>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.FeedProcessing.IChangeFeedObserver.CloseAsync(Microsoft.Azure.Documents.ChangeFeedProcessor.FeedProcessing.IChangeFeedObserverContext,Microsoft.Azure.Documents.ChangeFeedProcessor.FeedProcessing.ChangeFeedObserverCloseReason)">
+            <summary>
+            This is called when change feed observer is closed.
+            </summary>
+            <param name="context">The context specifying partition for this observer, etc.</param>
+            <param name="reason">Specifies the reason the observer is closed.</param>
+            <returns>A Task to allow asynchronous execution.</returns>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.FeedProcessing.IChangeFeedObserver.ProcessChangesAsync(Microsoft.Azure.Documents.ChangeFeedProcessor.FeedProcessing.IChangeFeedObserverContext,System.Collections.Generic.IReadOnlyList{Microsoft.Azure.Documents.Document},System.Threading.CancellationToken)">
+            <summary>
+            This is called when document changes are available on change feed.
+            </summary>
+            <param name="context">The context specifying partition for this change event, etc.</param>
+            <param name="docs">The documents changed.</param>
+            <param name="cancellationToken">Token to signal that the parition processing is going to finish.</param>
+            <returns>A Task to allow asynchronous execution.</returns>
+        </member>
+        <member name="T:Microsoft.Azure.Documents.ChangeFeedProcessor.FeedProcessing.IChangeFeedObserverContext">
+            <summary>
+            Represents the context passed to <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.FeedProcessing.IChangeFeedObserver"/> events.
+            </summary>
+        </member>
+        <member name="P:Microsoft.Azure.Documents.ChangeFeedProcessor.FeedProcessing.IChangeFeedObserverContext.PartitionKeyRangeId">
+            <summary>
+            Gets the id of the partition for the current event.
+            </summary>
+        </member>
+        <member name="P:Microsoft.Azure.Documents.ChangeFeedProcessor.FeedProcessing.IChangeFeedObserverContext.FeedResponse">
+            <summary>
+            Gets the response from the underlying <see cref="M:Microsoft.Azure.Documents.Linq.IDocumentQuery`1.ExecuteNextAsync(System.Threading.CancellationToken)"/> call.
+            </summary>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.FeedProcessing.IChangeFeedObserverContext.CheckpointAsync">
+            <summary>
+            Checkpoints progress of a stream. This method is valid only if manual checkpoint was configured.
+            Client may accept multiple change feed batches to process in parallel.
+            Once first N document processing was finished the client can call checkpoint on the last completed batches in the row.
+            In case of automatic checkpointing this is method throws.
+            </summary>
+            <exception cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.Exceptions.LeaseLostException">Thrown if other host acquired the lease or the lease was deleted</exception>
+        </member>
+        <member name="T:Microsoft.Azure.Documents.ChangeFeedProcessor.FeedProcessing.IChangeFeedObserverFactory">
+            <summary>
+            Factory class used to create instance(s) of <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.FeedProcessing.IChangeFeedObserver"/>.
+            </summary>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.FeedProcessing.IChangeFeedObserverFactory.CreateObserver">
+            <summary>
+            Creates an instance of a <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.FeedProcessing.IChangeFeedObserver"/>.
+            </summary>
+            <returns>An instance of a <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.FeedProcessing.IChangeFeedObserver"/>.</returns>
+        </member>
+        <member name="T:Microsoft.Azure.Documents.ChangeFeedProcessor.FeedProcessing.IPartitionProcessor">
+            <summary>
+            Provides an API to run continious processing on a single partition of some resource.
+            Created by <see cref="M:Microsoft.Azure.Documents.ChangeFeedProcessor.FeedProcessing.IPartitionProcessorFactory.Create(Microsoft.Azure.Documents.ChangeFeedProcessor.PartitionManagement.ILease,Microsoft.Azure.Documents.ChangeFeedProcessor.FeedProcessing.IChangeFeedObserver)"/> after some lease is acquired by the current host.
+            Processing can perform the following tasks in a loop:
+              1. Read some data from the resource partition.
+              2. Handle possible problems with the read.
+              3. Pass the obtained data to an observer by calling <see cref="M:Microsoft.Azure.Documents.ChangeFeedProcessor.FeedProcessing.IChangeFeedObserver.ProcessChangesAsync(Microsoft.Azure.Documents.ChangeFeedProcessor.FeedProcessing.IChangeFeedObserverContext,System.Collections.Generic.IReadOnlyList{Microsoft.Azure.Documents.Document},System.Threading.CancellationToken)"/> with the context <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.FeedProcessing.IChangeFeedObserverContext"/>.
+            </summary>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.FeedProcessing.IPartitionProcessor.RunAsync(System.Threading.CancellationToken)">
+            <summary>
+            Perform partition processing.
+            </summary>
+            <param name="cancellationToken">Cancellation token to be used to stop processing</param>
+            <returns>A <see cref="T:System.Threading.Tasks.Task"/>.</returns>
+        </member>
+        <member name="T:Microsoft.Azure.Documents.ChangeFeedProcessor.FeedProcessing.IPartitionProcessorFactory">
+            <summary>
+            Factory class used to create instance(s) of <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.FeedProcessing.IPartitionProcessor"/>.
+            </summary>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.FeedProcessing.IPartitionProcessorFactory.Create(Microsoft.Azure.Documents.ChangeFeedProcessor.PartitionManagement.ILease,Microsoft.Azure.Documents.ChangeFeedProcessor.FeedProcessing.IChangeFeedObserver)">
+            <summary>
+            Creates an instance of a <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.FeedProcessing.IPartitionProcessor"/>.
+            </summary>
+            <param name="lease">Lease to be used for partition processing</param>
+            <param name="observer">Observer to be used</param>
+            <returns>An instance of a <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.FeedProcessing.IPartitionProcessor"/>.</returns>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.IPartitionCheckpointer.CheckpointPartitionAsync(System.String)">
+            <summary>
+            Checkpoint the given partition up to the given continuation token.
+            </summary>
+            <param name="сontinuationToken">Continuation token</param>
+        </member>
+        <member name="P:Microsoft.Azure.Documents.ChangeFeedProcessor.LeaseManagement.DocumentServiceLease.ContinuationToken">
+            <summary>
+            Gets or sets the current value for the offset in the stream.
+            </summary>
+        </member>
+        <member name="T:Microsoft.Azure.Documents.ChangeFeedProcessor.LeaseManagement.DocumentServiceLeaseStoreManager">
+            <summary>
+            Lease manager that is using Azure Document Service as lease storage.
+            Documents in lease collection are organized as this:
+            ChangeFeed.federation|database_rid|collection_rid.info            -- container
+            ChangeFeed.federation|database_rid|collection_rid..partitionId1   -- each partition
+            ChangeFeed.federation|database_rid|collection_rid..partitionId2
+                                                    ...
+            </summary>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.LeaseManagement.DocumentServiceLeaseStoreManager.#ctor(Microsoft.Azure.Documents.ChangeFeedProcessor.LeaseManagement.DocumentServiceLeaseStoreManagerSettings,Microsoft.Azure.Documents.ChangeFeedProcessor.DataAccess.IChangeFeedDocumentClient,Microsoft.Azure.Documents.ChangeFeedProcessor.LeaseManagement.IRequestOptionsFactory,Microsoft.Azure.Documents.ChangeFeedProcessor.LeaseManagement.IDocumentServiceLeaseUpdater)">
+            <summary>
+            Initializes a new instance of the <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.LeaseManagement.DocumentServiceLeaseStoreManager"/> class.
+            </summary>
+            <remarks>
+            Internal only for testing purposes, otherwise would be private.
+            </remarks>
+        </member>
+        <member name="T:Microsoft.Azure.Documents.ChangeFeedProcessor.LeaseManagement.DocumentServiceLeaseStoreManagerBuilder">
+            <summary>
+            Provides flexible way to build lease manager constructor parameters.
+            For the actual creation of lease manager instance, delegates to lease manager factory.
+            </summary>
+        </member>
+        <member name="T:Microsoft.Azure.Documents.ChangeFeedProcessor.LeaseManagement.ILeaseCheckpointer">
+            <summary>
+            Used to checkpoitn leases.
+            </summary>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.LeaseManagement.ILeaseCheckpointer.CheckpointAsync(Microsoft.Azure.Documents.ChangeFeedProcessor.PartitionManagement.ILease,System.String)">
+            <summary>
+            Checkpoint the lease.
+            </summary>
+            <param name="lease">Lease to renew</param>
+            <param name="continuationToken">Continuation token</param>
+            <returns>Updated renewed lease</returns>
+            <exception cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.Exceptions.LeaseLostException">Thrown if other host acquired the lease or lease was deleted</exception>
+        </member>
+        <member name="T:Microsoft.Azure.Documents.ChangeFeedProcessor.LeaseManagement.ILeaseContainer">
+            <summary>
+            Represents operations to get leases from lease store.
+            </summary>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.LeaseManagement.ILeaseContainer.GetAllLeasesAsync">
+            <summary>
+            Get all leases.
+            </summary>
+            <returns>List of all leases</returns>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.LeaseManagement.ILeaseContainer.GetOwnedLeasesAsync">
+            <summary>
+            Get all the leases owned by the current host.
+            </summary>
+            <returns>Enumerable of all leases owned by the current host</returns>
+        </member>
+        <member name="T:Microsoft.Azure.Documents.ChangeFeedProcessor.LeaseManagement.ILeaseManager">
+            <summary>
+            The ILeaseManager defines a way to perform operations with <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.PartitionManagement.ILease"/>.
+            </summary>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.LeaseManagement.ILeaseManager.CreateLeaseIfNotExistAsync(System.String,System.String)">
+            <summary>
+            Checks whether the lease exists and creates it if it does not exist.
+            </summary>
+            <param name="partitionId">Partition to work on</param>
+            <param name="continuationToken">Continuation token if it exists</param>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.LeaseManagement.ILeaseManager.DeleteAsync(Microsoft.Azure.Documents.ChangeFeedProcessor.PartitionManagement.ILease)">
+            <summary>
+            Delete the lease.
+            </summary>
+            <param name="lease">Lease to remove</param>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.LeaseManagement.ILeaseManager.AcquireAsync(Microsoft.Azure.Documents.ChangeFeedProcessor.PartitionManagement.ILease)">
+            <summary>
+            Acquire ownership of the lease.
+            </summary>
+            <param name="lease">Lease to acquire</param>
+            <returns>Updated acquired lease</returns>
+            <exception cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.Exceptions.LeaseLostException">Thrown if other host acquired concurrently</exception>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.LeaseManagement.ILeaseManager.ReleaseAsync(Microsoft.Azure.Documents.ChangeFeedProcessor.PartitionManagement.ILease)">
+            <summary>
+            Release ownership of the lease.
+            </summary>
+            <param name="lease">Lease to acquire</param>
+            <exception cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.Exceptions.LeaseLostException">Thrown if other host acquired the lease or lease was deleted</exception>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.LeaseManagement.ILeaseManager.RenewAsync(Microsoft.Azure.Documents.ChangeFeedProcessor.PartitionManagement.ILease)">
+            <summary>
+            Renew the lease. Leases are periodically renewed to prevent expiration.
+            </summary>
+            <param name="lease">Lease to renew</param>
+            <returns>Updated renewed lease</returns>
+            <exception cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.Exceptions.LeaseLostException">Thrown if other host acquired the lease or lease was deleted</exception>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.LeaseManagement.ILeaseManager.UpdatePropertiesAsync(Microsoft.Azure.Documents.ChangeFeedProcessor.PartitionManagement.ILease)">
+            <summary>
+            Replace properties from the specified lease.
+            </summary>
+            <param name="leaseToUpdatePropertiesFrom">Lease containing new properties</param>
+            <returns>Updated lease</returns>
+            <exception cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.Exceptions.LeaseLostException">Thrown if other host acquired the lease</exception>
+        </member>
+        <member name="T:Microsoft.Azure.Documents.ChangeFeedProcessor.LeaseManagement.ILeaseStore">
+            <summary>
+            Represents the lease store container to deal with initialiation/cleanup of leases
+            for particular monitoring collection and lease container prefix.
+            </summary>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.LeaseManagement.ILeaseStore.IsInitializedAsync">
+            <summary>
+            Checks if the lease store is initialized.
+            </summary>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.LeaseManagement.ILeaseStore.MarkInitializedAsync">
+            <summary>
+            Mark the store as initialized.
+            </summary>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.LeaseManagement.ILeaseStore.AcquireInitializationLockAsync(System.TimeSpan)">
+            <summary>
+            Places a lock on the lease store for initialization. Only one process may own the store for the lock time.
+            </summary>
+            <param name="lockExpirationTime">The time for the lock to expire.</param>
+            <returns>True if the lock was acquired, false otherwise.</returns>
+            <remarks>In order for expiration time work, lease colection needs to have TTL enabled.</remarks>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.LeaseManagement.ILeaseStore.ReleaseInitializationLockAsync">
+            <summary>
+            Releases the lock one the lease store for initialization.
+            </summary>
+            <returns>True if the lock was acquired and was relesed, false if the lock was not acquired.</returns>
+        </member>
+        <member name="T:Microsoft.Azure.Documents.ChangeFeedProcessor.LeaseManagement.ILeaseStoreManager">
+            <summary>
+            The ILeaseManager defines a way to perform operations with <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.PartitionManagement.ILease"/>.
+            </summary>
+        </member>
+        <member name="T:Microsoft.Azure.Documents.ChangeFeedProcessor.LeaseManagement.IRequestOptionsFactory">
+            <summary>
+            Defines request options for lease requests to use with <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.LeaseManagement.DocumentServiceLeaseStoreManager"/> and <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.LeaseManagement.DocumentServiceLeaseStore"/>.
+            </summary>
+        </member>
+        <member name="T:Microsoft.Azure.Documents.ChangeFeedProcessor.LeaseManagement.PartitionedByIdCollectionRequestOptionsFactory">
+            <summary>
+            Used to create request options for partitioned lease collections, when partition key is defined as /id.
+            </summary>
+        </member>
+        <member name="T:Microsoft.Azure.Documents.ChangeFeedProcessor.LeaseManagement.SinglePartitionRequestOptionsFactory">
+            <summary>
+            Used to create request options for non-partitioned lease collections.
+            </summary>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.Logging.ILog.Log(Microsoft.Azure.Documents.ChangeFeedProcessor.Logging.LogLevel,System.Func{System.String},System.Exception,System.Object[])">
+            <summary>
+            Log a message the specified log level.
+            </summary>
+            <param name="logLevel">The log level.</param>
+            <param name="messageFunc">The message function.</param>
+            <param name="exception">An optional exception.</param>
+            <param name="formatParameters">Optional format parameters for the message generated by the messagefunc. </param>
+            <returns>true if the message was logged. Otherwise false.</returns>
+            <remarks>
+            Note to implementers: the message func should not be called if the loglevel is not enabled
+            so as not to incur performance penalties.
+            
+            To check IsEnabled call Log with only LogLevel and check the return value, no event will be written.
+            </remarks>
+        </member>
+        <member name="T:Microsoft.Azure.Documents.ChangeFeedProcessor.Logging.LogLevel">
+            <summary>
+            The log level.
+            </summary>
+        </member>
+        <member name="T:Microsoft.Azure.Documents.ChangeFeedProcessor.Logging.ILogProvider">
+            <summary>
+            Represents a way to get a <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.Logging.ILog"/>
+            </summary>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.Logging.ILogProvider.GetLogger(System.String)">
+            <summary>
+            Gets the specified named logger.
+            </summary>
+            <param name="name">Name of the logger.</param>
+            <returns>The logger reference.</returns>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.Logging.ILogProvider.OpenNestedContext(System.String)">
+            <summary>
+            Opens a nested diagnostics context. Not supported in EntLib logging.
+            </summary>
+            <param name="message">The message to add to the diagnostics context.</param>
+            <returns>A disposable that when disposed removes the message from the context.</returns>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.Logging.ILogProvider.OpenMappedContext(System.String,System.String)">
+            <summary>
+            Opens a mapped diagnostics context. Not supported in EntLib logging.
+            </summary>
+            <param name="key">A key.</param>
+            <param name="value">A value.</param>
+            <returns>A disposable that when disposed removes the map from the context.</returns>
+        </member>
+        <member name="T:Microsoft.Azure.Documents.ChangeFeedProcessor.Logging.LogProvider">
+            <summary>
+            Provides a mechanism to create instances of <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.Logging.ILog" /> objects.
+            </summary>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.Logging.LogProvider.SetCurrentLogProvider(Microsoft.Azure.Documents.ChangeFeedProcessor.Logging.ILogProvider)">
+            <summary>
+            Sets the current log provider.
+            </summary>
+            <param name="logProvider">The log provider.</param>
+        </member>
+        <member name="P:Microsoft.Azure.Documents.ChangeFeedProcessor.Logging.LogProvider.IsDisabled">
+            <summary>
+            Gets or sets a value indicating whether this is logging is disabled.
+            </summary>
+            <value>
+            <c>true</c> if logging is disabled; otherwise, <c>false</c>.
+            </value>
+        </member>
+        <member name="P:Microsoft.Azure.Documents.ChangeFeedProcessor.Logging.LogProvider.OnCurrentLogProviderSet">
+            <summary>
+            Sets an action that is invoked when a consumer of your library has called SetCurrentLogProvider. It is 
+            important that hook into this if you are using child libraries (especially ilmerged ones) that are using
+            LibLog (or other logging abstraction) so you adapt and delegate to them.
+            <see cref="M:Microsoft.Azure.Documents.ChangeFeedProcessor.Logging.LogProvider.SetCurrentLogProvider(Microsoft.Azure.Documents.ChangeFeedProcessor.Logging.ILogProvider)"/> 
+            </summary>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.Logging.LogProvider.For``1">
+            <summary>
+            Gets a logger for the specified type.
+            </summary>
+            <typeparam name="T">The type whose name will be used for the logger.</typeparam>
+            <returns>An instance of <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.Logging.ILog"/></returns>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.Logging.LogProvider.GetCurrentClassLogger">
+            <summary>
+            Gets a logger for the current class.
+            </summary>
+            <returns>An instance of <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.Logging.ILog"/></returns>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.Logging.LogProvider.GetLogger(System.Type,System.String)">
+            <summary>
+            Gets a logger for the specified type.
+            </summary>
+            <param name="type">The type whose name will be used for the logger.</param>
+            <param name="fallbackTypeName">If the type is null then this name will be used as the log name instead</param>
+            <returns>An instance of <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.Logging.ILog"/></returns>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.Logging.LogProvider.GetLogger(System.String)">
+            <summary>
+            Gets a logger with the specified name.
+            </summary>
+            <param name="name">The name.</param>
+            <returns>An instance of <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.Logging.ILog"/></returns>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.Logging.LogProvider.OpenNestedContext(System.String)">
+            <summary>
+            Opens a nested diagnostics context.
+            </summary>
+            <param name="message">A message.</param>
+            <returns>An <see cref="T:System.IDisposable"/> that closes context when disposed.</returns>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.Logging.LogProvider.OpenMappedContext(System.String,System.String)">
+            <summary>
+            Opens a mapped diagnostics context.
+            </summary>
+            <param name="key">A key.</param>
+            <param name="value">A value.</param>
+            <returns>An <see cref="T:System.IDisposable"/> that closes context when disposed.</returns>
+        </member>
+        <member name="T:Microsoft.Azure.Documents.ChangeFeedProcessor.Logging.LogProviders.LoupeLogProvider.WriteDelegate">
+            <summary>
+            The form of the Loupe Log.Write method we're using
+            </summary>
+        </member>
+        <member name="P:Microsoft.Azure.Documents.ChangeFeedProcessor.Logging.LogProviders.LoupeLogProvider.ProviderIsAvailableOverride">
+            <summary>
+            Gets or sets a value indicating whether [provider is available override]. Used in tests.
+            </summary>
+            <value>
+            <c>true</c> if [provider is available override]; otherwise, <c>false</c>.
+            </value>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.Logging.LogProviders.LogMessageFormatter.SimulateStructuredLogging(System.Func{System.String},System.Object[])">
+            <summary>
+            Some logging frameworks support structured logging, such as serilog. This will allow you to add names to structured data in a format string:
+            For example: Log("Log message to {user}", user). This only works with serilog, but as the user of LibLog, you don't know if serilog is actually 
+            used. So, this class simulates that. it will replace any text in {curly braces} with an index number. 
+            
+            "Log {message} to {user}" would turn into => "Log {0} to {1}". Then the format parameters are handled using regular .net string.Format.
+            </summary>
+            <param name="messageBuilder">The message builder.</param>
+            <param name="formatParameters">The format parameters.</param>
+            <returns></returns>
+        </member>
+        <member name="T:Microsoft.Azure.Documents.ChangeFeedProcessor.Logging.TraceLogProvider">
+             <summary>
+             Implements a trace log provider for .Net tracing.
+             </summary>
+             <example>
+             <code language="C#">
+             <![CDATA[
+             using Microsoft.Azure.Documents.ChangeFeedProcessor.Logging;
+            
+             var hostName = "SampleHost";
+             var tracelogProvider = new TraceLogProvider();
+             using (tracelogProvider.OpenNestedContext(hostName))
+             {
+                 LogProvider.SetCurrentLogProvider(tracelogProvider);
+            
+                 // After this, create IChangeFeedProcessor instance and start/stop it.
+             }
+             ]]>
+             </code>
+             </example>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.Logging.TraceLogProvider.#ctor">
+            <summary>
+            Initializes a new instance of the <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.Logging.TraceLogProvider"/> class.
+            </summary>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.Logging.TraceLogProvider.GetLogger(System.String)">
+            <summary>
+            Gets the logger with specified name.
+            </summary>
+            <param name="name">Name of the logger.
+            This is typically the class name for which the logger is created using <see cref="M:Microsoft.Azure.Documents.ChangeFeedProcessor.Logging.LogProvider.GetCurrentClassLogger"/>.</param>
+            <returns>The logger reference.</returns>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.Logging.TraceLogProvider.OpenNestedContext(System.String)">
+            <summary>
+            Opens a nested diagnostics context.
+            </summary>
+            <param name="message">The message to add to the diagnostics context.</param>
+            <returns>A disposable that removes the message from the context when disposed.</returns>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.Logging.TraceLogProvider.OpenMappedContext(System.String,System.String)">
+            <summary>
+            Opens a mapped diagnostics context.
+            </summary>
+            <param name="key">The key to add to the diagnostics context.</param>
+            <param name="value">The value to add to the diagnostics context.</param>
+            <returns>A disposable that removes the message from the context when disposed.</returns>
+        </member>
+        <member name="T:Microsoft.Azure.Documents.ChangeFeedProcessor.Monitoring.HealthMonitoringRecord">
+            <summary>
+            A record used in the health monitoring.
+            </summary>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.Monitoring.HealthMonitoringRecord.#ctor(Microsoft.Azure.Documents.ChangeFeedProcessor.Monitoring.HealthSeverity,Microsoft.Azure.Documents.ChangeFeedProcessor.Monitoring.MonitoredOperation,Microsoft.Azure.Documents.ChangeFeedProcessor.PartitionManagement.ILease,System.Exception)">
+            <summary>
+            Initializes a new instance of the <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.Monitoring.HealthMonitoringRecord"/> class.
+            </summary>
+            <param name="severity">The health severity level.</param>
+            <param name="operation">The operation.</param>
+            <param name="lease">The lease.</param>
+            <param name="exception">The exception.</param>
+        </member>
+        <member name="P:Microsoft.Azure.Documents.ChangeFeedProcessor.Monitoring.HealthMonitoringRecord.Severity">
+            <summary>
+            Gets the health severity.
+            </summary>
+        </member>
+        <member name="P:Microsoft.Azure.Documents.ChangeFeedProcessor.Monitoring.HealthMonitoringRecord.Operation">
+            <summary>
+            Gets the monitored operation.
+            </summary>
+        </member>
+        <member name="P:Microsoft.Azure.Documents.ChangeFeedProcessor.Monitoring.HealthMonitoringRecord.Lease">
+            <summary>
+            Gets the lease which triggered the operation.
+            </summary>
+        </member>
+        <member name="P:Microsoft.Azure.Documents.ChangeFeedProcessor.Monitoring.HealthMonitoringRecord.Exception">
+            <summary>
+            Gets the exception details in case of failure.
+            </summary>
+        </member>
+        <member name="T:Microsoft.Azure.Documents.ChangeFeedProcessor.Monitoring.HealthSeverity">
+            <summary>
+            The health severity level
+            </summary>
+        </member>
+        <member name="F:Microsoft.Azure.Documents.ChangeFeedProcessor.Monitoring.HealthSeverity.Critical">
+            <summary>
+            Critical level.
+            </summary>
+        </member>
+        <member name="F:Microsoft.Azure.Documents.ChangeFeedProcessor.Monitoring.HealthSeverity.Error">
+            <summary>
+            Error level.
+            </summary>
+        </member>
+        <member name="F:Microsoft.Azure.Documents.ChangeFeedProcessor.Monitoring.HealthSeverity.Informational">
+            <summary>
+            Information level.
+            </summary>
+        </member>
+        <member name="T:Microsoft.Azure.Documents.ChangeFeedProcessor.Monitoring.IHealthMonitor">
+            <summary>
+            A strategy for handling the situation when the change feed processor is not able to acquire lease due to unknown reasons.
+            </summary>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.Monitoring.IHealthMonitor.InspectAsync(Microsoft.Azure.Documents.ChangeFeedProcessor.Monitoring.HealthMonitoringRecord)">
+            <summary>
+            A logic to handle that exceptional situation.
+            </summary>
+        </member>
+        <member name="T:Microsoft.Azure.Documents.ChangeFeedProcessor.Monitoring.MonitoredOperation">
+            <summary>
+            The health monitoring phase
+            </summary>
+        </member>
+        <member name="F:Microsoft.Azure.Documents.ChangeFeedProcessor.Monitoring.MonitoredOperation.AcquireLease">
+            <summary>
+            A phase when the instance tries to acquire the lease
+            </summary>
+        </member>
+        <member name="T:Microsoft.Azure.Documents.ChangeFeedProcessor.Monitoring.TraceHealthMonitor">
+            <summary>
+            A monitor which logs the errors only.
+            </summary>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.Monitoring.TraceHealthMonitor.InspectAsync(Microsoft.Azure.Documents.ChangeFeedProcessor.Monitoring.HealthMonitoringRecord)">
+            <inheritdoc />
+        </member>
+        <member name="T:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedEventHost">
+            <summary>
+            Simple host for distributing change feed events across observers and thus allowing these observers scale.
+            It distributes the load across its instances and allows dynamic scaling:
+              - Partitions in partitioned collections are distributed across instances/observers.
+              - New instance takes leases from existing instances to make distribution equal.
+              - If an instance dies, the leases are distributed across remaining instances.
+            It's useful for scenario when partition count is high so that one host/VM is not capable of processing that many change feed events.
+            Client application needs to implement <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.IChangeFeedObserver"/> and register processor implementation with ChangeFeedEventHost.
+            </summary>
+            <remarks>
+            It uses auxiliary document collection for managing leases for a partition.
+            Every EventProcessorHost instance is performing the following two tasks:
+                1) Renew Leases: It keeps track of leases currently owned by the host and continuously keeps on renewing the leases.
+                2) Acquire Leases: Each instance continuously polls all leases to check if there are any leases it should acquire
+                for the system to get into balanced state.
+            </remarks>
+            <example>
+            <code language="c#">
+            <![CDATA[
+            class DocumentFeedObserver : IChangeFeedObserver
+            {
+                private static int s_totalDocs = 0;
+                public Task OpenAsync(ChangeFeedObserverContext context)
+                {
+                    Console.WriteLine("Worker opened, {0}", context.PartitionKeyRangeId);
+                    return Task.CompletedTask;  // Requires targeting .NET 4.6+.
+                }
+                public Task CloseAsync(ChangeFeedObserverContext context, ChangeFeedObserverCloseReason reason)
+                {
+                    Console.WriteLine("Worker closed, {0}", context.PartitionKeyRangeId);
+                    return Task.CompletedTask;
+                }
+                public Task ProcessChangesAsync(ChangeFeedObserverContext context, IReadOnlyList<Document> docs)
+                {
+                    Console.WriteLine("Change feed: total {0} doc(s)", Interlocked.Add(ref s_totalDocs, docs.Count));
+                    return Task.CompletedTask;
+                }
+            }
+            static async Task StartChangeFeedHost()
+            {
+                string hostName = Guid.NewGuid().ToString();
+                DocumentCollectionInfo documentCollectionLocation = new DocumentCollectionInfo
+                {
+                    Uri = new Uri("https://YOUR_SERVICE.documents.azure.com:443/"),
+                    MasterKey = "YOUR_SECRET_KEY==",
+                    DatabaseName = "db1",
+                    CollectionName = "documents"
+                };
+                DocumentCollectionInfo leaseCollectionLocation = new DocumentCollectionInfo
+                {
+                    Uri = new Uri("https://YOUR_SERVICE.documents.azure.com:443/"),
+                    MasterKey = "YOUR_SECRET_KEY==",
+                    DatabaseName = "db1",
+                    CollectionName = "leases"
+                };
+                Console.WriteLine("Main program: Creating ChangeFeedEventHost...");
+                ChangeFeedEventHost host = new ChangeFeedEventHost(hostName, documentCollectionLocation, leaseCollectionLocation);
+                await host.RegisterObserverAsync<DocumentFeedObserver>();
+                Console.WriteLine("Main program: press Enter to stop...");
+                Console.ReadLine();
+                await host.UnregisterObserversAsync();
+            }
+            ]]>
+            </code>
+            </example>
+        </member>
+        <member name="F:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedEventHost.builder">
+            <summary>
+            Default builder for the <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedEventHost"/>
+            </summary>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedEventHost.#ctor(System.String,Microsoft.Azure.Documents.ChangeFeedProcessor.DocumentCollectionInfo,Microsoft.Azure.Documents.ChangeFeedProcessor.DocumentCollectionInfo)">
+            <summary>
+            Initializes a new instance of the <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedEventHost"/> class.
+            </summary>
+            <param name="hostName">Unique name for this host.</param>
+            <param name="documentCollectionLocation">Specifies location of the DocumentDB collection to monitor changes for.</param>
+            <param name="leaseCollectionLocation ">Specifies location of auxiliary data for load-balancing instances of <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedEventHost" />.</param>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedEventHost.#ctor(System.String,Microsoft.Azure.Documents.ChangeFeedProcessor.DocumentCollectionInfo,Microsoft.Azure.Documents.ChangeFeedProcessor.DocumentCollectionInfo,Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedHostOptions)">
+            <summary>
+            Initializes a new instance of the <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedEventHost"/> class.
+            </summary>
+            <param name="hostName">Unique name for this host.</param>
+            <param name="feedCollectionLocation">Specifies location of the Cosmos DB collection to monitor changes for.</param>
+            <param name="leaseCollectionLocation">Specifies location of auxiliary data for load-balancing instances of <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedEventHost" />.</param>
+            <param name="changeFeedHostOptions">Additional options to control load-balancing of <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedEventHost" /> instances.</param>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedEventHost.#ctor(System.String,Microsoft.Azure.Documents.ChangeFeedProcessor.DocumentCollectionInfo,Microsoft.Azure.Documents.ChangeFeedProcessor.DocumentCollectionInfo,Microsoft.Azure.Documents.Client.ChangeFeedOptions,Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedHostOptions)">
+            <summary>
+            Initializes a new instance of the <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedEventHost"/> class.
+            </summary>
+            <param name="hostName">Unique name for this host.</param>
+            <param name="feedCollectionLocation">Specifies location of the Cosmos DB collection to monitor changes for.</param>
+            <param name="leaseCollectionLocation">Specifies location of auxiliary data for load-balancing instances of <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedEventHost" />.</param>
+            <param name="changeFeedOptions">Options to pass to the DocumentClient.CreateDocumentChangeFeedQuery API.</param>
+            <param name="changeFeedHostOptions">Additional options to control load-balancing of <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedEventHost" /> instances.</param>
+        </member>
+        <member name="P:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedEventHost.HostName">
+            <summary>Gets the host name, which is a unique name for the instance.</summary>
+            <value>The host name.</value>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedEventHost.RegisterObserverAsync``1">
+            <summary>Asynchronously registers the observer interface implementation with the host.
+            This method also starts the host and enables it to start participating in the partition distribution process.</summary>
+            <typeparam name="T">Implementation of your application-specific event observer.</typeparam>
+            <returns>A task indicating that the <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedEventHost" /> instance has started.</returns>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedEventHost.RegisterObserverFactoryAsync(Microsoft.Azure.Documents.ChangeFeedProcessor.IChangeFeedObserverFactory)">
+            <summary>
+            Asynchronously registers the observer factory implementation with the host.
+            This method also starts the host and enables it to start participating in the partition distribution process.
+            </summary>
+            <param name="factory">Implementation of your application-specific event observer factory.</param>
+            <returns>A task indicating that the <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedEventHost" /> instance has started.</returns>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedEventHost.UnregisterObserversAsync">
+            <summary>Asynchronously shuts down the host instance. This method maintains the leases on all partitions currently held, and enables each
+            host instance to shut down cleanly by invoking the method with object.</summary>
+            <returns>A task that indicates the host instance has stopped.</returns>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedEventHost.GetEstimatedRemainingWork">
+            <summary>
+            Asynchronously checks the current existing leases and calculates an estimate of remaining work per leased partitions.
+            </summary>
+            <returns>An estimate amount of remaining documents to be processed</returns>
+        </member>
+        <member name="T:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedHostOptions">
+            <summary>
+            Options to control various aspects of partition distribution happening within <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedEventHost"/> instance.
+            </summary>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedHostOptions.#ctor">
+            <summary>Initializes a new instance of the <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedHostOptions" /> class.</summary>
+        </member>
+        <member name="P:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedHostOptions.LeaseRenewInterval">
+            <summary>
+            Gets or sets renew interval for all leases for partitions currently held by <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedEventHost"/> instance.
+            </summary>
+        </member>
+        <member name="P:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedHostOptions.LeaseAcquireInterval">
+            <summary>
+            Gets or sets the interval to kick off a task to compute if partitions are distributed evenly among known host instances.
+            </summary>
+        </member>
+        <member name="P:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedHostOptions.LeaseExpirationInterval">
+            <summary>
+            Gets or sets the interval for which the lease is taken on a lease representing a partition. If the lease is not renewed within this
+            interval, it will cause it to expire and ownership of the partition will move to another <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedEventHost"/> instance.
+            </summary>
+        </member>
+        <member name="P:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedHostOptions.FeedPollDelay">
+            <summary>
+            Gets or sets the delay in between polling a partition for new changes on the feed, after all current changes are drained.
+            </summary>
+        </member>
+        <member name="P:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedHostOptions.CheckpointFrequency">
+            <summary>
+            Gets or sets the frequency how often to checkpoint leases.
+            </summary>
+        </member>
+        <member name="P:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedHostOptions.LeasePrefix">
+            <summary>
+            Gets or sets a prefix to be used as part of the lease id. This can be used to support multiple instances of <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedEventHost"/>
+            instances pointing at the same feed while using the same auxiliary collection.
+            </summary>
+        </member>
+        <member name="P:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedHostOptions.IsAutoCheckpointEnabled">
+            <summary>
+            Gets or sets a value indicating whether the host will checkpoint leases automatically.
+            When this is set to false, use ChangeFeedObserverContext.CheckpointAsync for manual control of checkpoint.
+            </summary>
+        </member>
+        <member name="P:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedHostOptions.MinPartitionCount">
+            <summary>
+            Gets or sets the minimum partition count for the host.
+            This can be used to increase the number of partitions for the host and thus override equal distribution (which is the default) of leases between hosts.
+            </summary>
+        </member>
+        <member name="P:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedHostOptions.MaxPartitionCount">
+            <summary>
+            Gets or sets the maximum number of partitions the host can serve.
+            This can be used property to limit the number of partitions for the host and thus override equal distribution (which is the default) of leases between hosts.
+            Default is 0 (unlimited).
+            </summary>
+        </member>
+        <member name="P:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedHostOptions.DiscardExistingLeases">
+            <summary>
+            Gets or sets a value indicating whether on start of the host all existing leases should be deleted and the host should start from scratch.
+            </summary>
+        </member>
+        <member name="P:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedHostOptions.QueryPartitionsMaxBatchSize">
+            <summary>
+            Gets or sets the Batch size of query partitions API.
+            </summary>
+        </member>
+        <member name="T:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedObserverCloseReason">
+            <summary>
+            The reason for the <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.IChangeFeedObserver"/> to close.
+            </summary>
+        </member>
+        <member name="F:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedObserverCloseReason.Unknown">
+            <summary>
+            Unknown failure. This should never be sent to observers.
+            </summary>
+        </member>
+        <member name="F:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedObserverCloseReason.Shutdown">
+            <summary>
+            The ChangeFeedEventHost is shutting down.
+            </summary>
+        </member>
+        <member name="F:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedObserverCloseReason.ResourceGone">
+            <summary>
+            The resource, such as database or collection was removed.
+            </summary>
+        </member>
+        <member name="F:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedObserverCloseReason.LeaseLost">
+            <summary>
+            Lease was lost due to expiration or load-balancing.
+            </summary>
+        </member>
+        <member name="F:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedObserverCloseReason.ObserverError">
+            <summary>
+            IChangeFeedObserver threw an exception.
+            </summary>
+        </member>
+        <member name="F:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedObserverCloseReason.LeaseGone">
+            <summary>
+            The lease is gone. This can be due to partition split.
+            </summary>
+        </member>
+        <member name="T:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedObserverContext">
+            <summary>
+            The context passed to <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.IChangeFeedObserver"/> events.
+            </summary>
+        </member>
+        <member name="P:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedObserverContext.PartitionKeyRangeId">
+            <summary>
+            Gets or sets the id of the partition for current event.
+            </summary>
+        </member>
+        <member name="P:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedObserverContext.FeedResponse">
+            <summary>
+            Gets or sets the response from the underlying <see cref="M:Microsoft.Azure.Documents.Linq.IDocumentQuery`1.ExecuteNextAsync(System.Threading.CancellationToken)"/> call.
+            </summary>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedObserverContext.CheckpointAsync">
+            <summary>
+            Checkpoints progress of a stream. This method is valid only if manual checkpoint was configured.
+            Client may accept multiple change feed batches to process in parallel.
+            Once first N document processing was finished the client can call checkpoint on the last completed batches in the row.
+            In case of automatic checkpointing this is method throws.
+            </summary>
+            <exception cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.Exceptions.LeaseLostException">Thrown if other host acquired the lease or the lease was deleted</exception>
+            <returns>A <see cref="T:System.Threading.Tasks.Task"/>.</returns>
+        </member>
+        <member name="T:Microsoft.Azure.Documents.ChangeFeedProcessor.IChangeFeedObserver">
+            <summary>
+            This interface is used to deliver change events to document feed observers.
+            </summary>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.IChangeFeedObserver.OpenAsync(Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedObserverContext)">
+            <summary>
+            This is called when change feed observer is opened.
+            </summary>
+            <param name="context">The context specifying partition for this observer, etc.</param>
+            <returns>A Task to allow asynchronous execution.</returns>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.IChangeFeedObserver.CloseAsync(Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedObserverContext,Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedObserverCloseReason)">
+            <summary>
+            This is called when change feed observer is closed.
+            </summary>
+            <param name="context">The context specifying partition for this observer, etc.</param>
+            <param name="reason">Specifies the reason the observer is closed.</param>
+            <returns>A Task to allow asynchronous execution.</returns>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.IChangeFeedObserver.ProcessChangesAsync(Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedObserverContext,System.Collections.Generic.IReadOnlyList{Microsoft.Azure.Documents.Document})">
+            <summary>
+            This is called when document changes are available on change feed.
+            </summary>
+            <param name="context">The context specifying partition for this change event, etc.</param>
+            <param name="docs">The documents changed.</param>
+            <returns>A Task to allow asynchronous execution.</returns>
+        </member>
+        <member name="T:Microsoft.Azure.Documents.ChangeFeedProcessor.IChangeFeedObserverFactory">
+            <summary>
+            Factory class used to create instance(s) of <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.IChangeFeedObserver"/>.
+            </summary>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.IChangeFeedObserverFactory.CreateObserver">
+            <summary>
+            Creates a new instance of <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.IChangeFeedObserver"/>.
+            </summary>
+            <returns>Created instance of <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.IChangeFeedObserver"/>.</returns>
+        </member>
+        <member name="T:Microsoft.Azure.Documents.ChangeFeedProcessor.PartitionManagement.IChangeFeedProcessor">
+            <summary>
+            Provides an API to start and stop a <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedProcessor"/> instance created by <see cref="M:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedProcessorBuilder.BuildAsync"/>.
+            </summary>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.PartitionManagement.IChangeFeedProcessor.StartAsync">
+            <summary>
+            Start listening for changes.
+            </summary>
+            <returns>A <see cref="T:System.Threading.Tasks.Task"/>.</returns>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.PartitionManagement.IChangeFeedProcessor.StopAsync">
+            <summary>
+            Stops listening for changes.
+            </summary>
+            <returns>A <see cref="T:System.Threading.Tasks.Task"/>.</returns>
+        </member>
+        <member name="T:Microsoft.Azure.Documents.ChangeFeedProcessor.PartitionManagement.ILease">
+            <summary>
+            Represents a lease that is persisted as a document in the lease collection.
+            Leases are used to:
+            * Keep track of the <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.PartitionManagement.IChangeFeedProcessor"/> progress for a particular Partition Key Range.
+            * Distribute load between different instances of <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.PartitionManagement.IChangeFeedProcessor"/>.
+            * Ensure reliable recovery for cases when an instance of <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.PartitionManagement.IChangeFeedProcessor"/> gets disconnected, hangs or crashes.
+            </summary>
+        </member>
+        <member name="P:Microsoft.Azure.Documents.ChangeFeedProcessor.PartitionManagement.ILease.PartitionId">
+            <summary>
+            Gets the partition associated with the lease.
+            </summary>
+        </member>
+        <member name="P:Microsoft.Azure.Documents.ChangeFeedProcessor.PartitionManagement.ILease.Owner">
+            <summary>
+            Gets or sets the host name owner of the lease.
+            The Owner keeps track which <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.PartitionManagement.IChangeFeedProcessor"/> is currently processing that Partition Key Range.
+            </summary>
+        </member>
+        <member name="P:Microsoft.Azure.Documents.ChangeFeedProcessor.PartitionManagement.ILease.Timestamp">
+            <summary>
+            Gets or sets the Timestamp of the lease.
+            Timestamp is used to determine lease expiration.
+            </summary>
+        </member>
+        <member name="P:Microsoft.Azure.Documents.ChangeFeedProcessor.PartitionManagement.ILease.ContinuationToken">
+            <summary>
+            Gets or sets the Continuation Token.
+            Continuation Token is used to determine the last processed point of the Change Feed.
+            </summary>
+        </member>
+        <member name="P:Microsoft.Azure.Documents.ChangeFeedProcessor.PartitionManagement.ILease.Id">
+            <summary>
+            Gets the lease Id.
+            </summary>
+        </member>
+        <member name="P:Microsoft.Azure.Documents.ChangeFeedProcessor.PartitionManagement.ILease.ConcurrencyToken">
+            <summary>
+            Gets the Concurrency Token.
+            </summary>
+        </member>
+        <member name="P:Microsoft.Azure.Documents.ChangeFeedProcessor.PartitionManagement.ILease.Properties">
+            <summary>
+            Gets or sets custom lease properties which can be managed from <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.PartitionManagement.IParitionLoadBalancingStrategy"/>.
+            </summary>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.PartitionManagement.ILeaseRenewer.RunAsync(System.Threading.CancellationToken)">
+            <summary>
+            Starts the lease renewer
+            </summary>
+        </member>
+        <member name="T:Microsoft.Azure.Documents.ChangeFeedProcessor.PartitionManagement.IParitionLoadBalancingStrategy">
+             <summary>
+             A strategy defines which leases should be taken by the current host in a certain moment.
+             </summary>
+             <remarks>
+             It can set new <see cref="P:Microsoft.Azure.Documents.ChangeFeedProcessor.PartitionManagement.ILease.Properties"/> for all returned leases if needed, including currently owned leases.
+             </remarks>
+             <example>
+             <code language="C#">
+             <![CDATA[
+             public class CustomStrategy : IParitionLoadBalancingStrategy
+             {
+                 private string hostName;
+                 private string hostVersion;
+                 private TimeSpan leaseExpirationInterval;
+            
+                 private const string VersionPropertyKey = "version";
+            
+                 public IEnumerable<ILease> SelectLeasesToTake(IEnumerable<ILease> allLeases)
+                 {
+                     var takenLeases = this.FindLeasesToTake(allLeases);
+                     foreach (var lease in takenLeases)
+                     {
+                         lease.Properties[VersionPropertyKey] = this.hostVersion;
+                     }
+            
+                     return takenLeases;
+                 }
+            
+                 private IEnumerable<ILease> FindLeasesToTake(IEnumerable<ILease> allLeases)
+                 {
+                     List<ILease> takenLeases = new List<ILease>();
+                     foreach (var lease in allLeases)
+                     {
+                         if (string.IsNullOrWhiteSpace(lease.Owner) || this.IsExpired(lease))
+                         {
+                             takenLeases.Add(lease);
+                         }
+            
+                         if (lease.Owner != this.hostName)
+                         {
+                             var ownerVersion = lease.Properties[VersionPropertyKey];
+                             if (ownerVersion < this.hostVersion)
+                             {
+                                 takenLeases.Add(lease);
+                             }
+            
+                             // more logic for leases owned by other hosts
+                         }
+                     }
+            
+                     return takenLeases;
+                 }
+            
+                 private bool IsExpired(ILease lease)
+                 {
+                     return lease.Timestamp.ToUniversalTime() + this.leaseExpirationInterval < DateTime.UtcNow;
+                 }
+             }
+             ]]>
+             </code>
+             </example>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.PartitionManagement.IParitionLoadBalancingStrategy.SelectLeasesToTake(System.Collections.Generic.IEnumerable{Microsoft.Azure.Documents.ChangeFeedProcessor.PartitionManagement.ILease})">
+            <summary>
+            Select leases that should be taken for processing.
+            This method will be called periodically with <see cref="P:Microsoft.Azure.Documents.ChangeFeedProcessor.ChangeFeedProcessorOptions.LeaseAcquireInterval"/>
+            </summary>
+            <param name="allLeases">All leases</param>
+            <returns>Leases that should be taken for processing by this host</returns>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.PartitionManagement.IPartitionLoadBalancer.Start">
+            <summary>
+            Starts the load balancer
+            </summary>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.PartitionManagement.IPartitionLoadBalancer.StopAsync">
+            <summary>
+            Stops the load balancer
+            </summary>
+            <returns>Task that completes once load balancer is fully stopped</returns>
+        </member>
+        <member name="T:Microsoft.Azure.Documents.ChangeFeedProcessor.PartitionManagement.IPartitionSynchronizer">
+            <summary>
+            Read DocDB partitions and create leases if they do not exist
+            </summary>
+        </member>
+        <member name="T:Microsoft.Azure.Documents.ChangeFeedProcessor.PartitionManagement.IRemainingWorkEstimator">
+            <summary>
+            Used to estimate the pending work remaining to be read in the Change Feed. Calculates the sum of pending work based on the difference between the latest status of the feed and the status of each existing lease.
+            </summary>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.PartitionManagement.IRemainingWorkEstimator.GetEstimatedRemainingWork">
+            <summary>
+            Calculates an estimate of the pending work remaining to be read in the Change Feed in amount of documents in the whole collection.
+            </summary>
+            <returns>An estimation of pending work in amount of documents.</returns>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.PartitionManagement.IRemainingWorkEstimator.GetEstimatedRemainingWorkPerPartitionAsync">
+            <summary>
+            Calculates an estimate of the pending work remaining to be read in the Change Feed in amount of documents per partition.
+            </summary>
+            <returns>An array of an estimation of pending work in amount of documents per partitions.</returns>
+        </member>
+        <member name="T:Microsoft.Azure.Documents.ChangeFeedProcessor.PartitionManagement.RemainingPartitionWork">
+            <summary>
+            Remaing estimated work on the partition
+            </summary>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.PartitionManagement.RemainingPartitionWork.#ctor(System.String,System.Int64)">
+            <summary>
+            Initializes a new instance of the <see cref="T:Microsoft.Azure.Documents.ChangeFeedProcessor.PartitionManagement.RemainingPartitionWork"/> class.
+            </summary>
+            <param name="partitionKeyRangeId">The partition key range ID for which the remaining work is calculated</param>
+            <param name="remainingWork">The ammount of documents remaining to be processed</param>
+        </member>
+        <member name="P:Microsoft.Azure.Documents.ChangeFeedProcessor.PartitionManagement.RemainingPartitionWork.PartitionKeyRangeId">
+            <summary>
+            Gets the partition key range ID for which the remaining work is calculated
+            </summary>
+        </member>
+        <member name="P:Microsoft.Azure.Documents.ChangeFeedProcessor.PartitionManagement.RemainingPartitionWork.RemainingWork">
+            <summary>
+            Gets the ammount of documents remaining to be processed.
+            </summary>
+        </member>
+        <member name="M:Microsoft.Azure.Documents.ChangeFeedProcessor.PartitionManagement.RemainingWorkEstimator.ExtractLsnFromSessionToken(System.String)">
+            <summary>
+            Parses a Session Token and extracts the LSN.
+            </summary>
+            <remarks>
+            Session Token can be in two formats. Either {PartitionKeyRangeId}:{LSN} or {PartitionKeyRangeId}:{Version}#{GlobalLSN}.
+            </remarks>
+            <param name="sessionToken">A Session Token</param>
+            <returns>Lsn value</returns>
+        </member>
+    </members>
+</doc>
