@@ -2,14 +2,13 @@
 namespace Microsoft.CosmosDB.PITRWithRestore.Backup
 {
     using System;
-    using System.Collections.ObjectModel;
     using System.Configuration;
     using System.Threading.Tasks;
 
     using Microsoft.Azure.Documents.Client;
     using Microsoft.Azure.Documents.ChangeFeedProcessor;
-    using Microsoft.Azure.Documents;
     using Microsoft.CosmosDB.PITRWithRestore.CosmosDB;
+    using Microsoft.CosmosDB.PITRWithRestore.Logger;
 
     public class BackupExecutor
     {
@@ -24,10 +23,16 @@ namespace Microsoft.CosmosDB.PITRWithRestore.Backup
         /// </summary>
         private string HostName;
 
+        /// <summary>
+        /// Logger to push messages during run time
+        /// </summary>
+        private ILogger Logger;
+
         public BackupExecutor(DocumentClient client, string hostName)
         {
             this.DocumentClient = client;
             this.HostName = hostName;
+            this.Logger = new LogAnalyticsLogger();
         }
 
         /// <summary>
@@ -43,7 +48,7 @@ namespace Microsoft.CosmosDB.PITRWithRestore.Backup
             int leaseThroughput = int.Parse(ConfigurationManager.AppSettings["leaseThroughput"]);
             string leaseCollectionPartitionKey = ConfigurationManager.AppSettings["leaseCollectionPartitionKey"];
 
-            await CosmosDBHelper.CreateCollectionIfNotExistsAsync(this.DocumentClient, leaseDbName, leaseCollectionName, leaseThroughput, leaseCollectionPartitionKey);
+            await CosmosDBHelper.CreateCollectionIfNotExistsAsync(this.DocumentClient, leaseDbName, leaseCollectionName, leaseThroughput, leaseCollectionPartitionKey, this.Logger);
 
             await this.RunChangeFeedHostAsync();
         }

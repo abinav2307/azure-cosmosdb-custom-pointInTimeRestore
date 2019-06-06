@@ -10,6 +10,7 @@ namespace Microsoft.CosmosDB.PITRWithRestore
     using Microsoft.WindowsAzure.Storage;
     using Microsoft.WindowsAzure.Storage.Blob;
     using Microsoft.CosmosDB.PITRWithRestore.CosmosDB;
+    using Microsoft.CosmosDB.PITRWithRestore.Logger;
 
     /// <summary>
     /// Factory class to create instance of document feed observer.
@@ -34,6 +35,11 @@ namespace Microsoft.CosmosDB.PITRWithRestore
         private DocumentClient DocumentClient;
 
         /// <summary>
+        /// Logger to push messages during run time
+        /// </summary>
+        private ILogger Logger;
+
+        /// <summary>
         /// Initializes a new instance of the
         /// <see cref="DocumentFeedObserverFactory" /> class.
         /// </summary>
@@ -44,7 +50,7 @@ namespace Microsoft.CosmosDB.PITRWithRestore
             // If the environment variable is created after the application is launched in a console or with Visual
             // Studio, the shell or application needs to be closed and reloaded to take the environment variable into account.
             string storageConnectionString = ConfigurationManager.AppSettings["BlobStorageConnectionString"];
-
+            this.Logger = new LogAnalyticsLogger();
             this.DocumentClient = client;
 
             // Ensure the connection string can be parsed.
@@ -70,7 +76,8 @@ namespace Microsoft.CosmosDB.PITRWithRestore
                 backupFailureDatabaseName, 
                 backupFailureCollectionName, 
                 backupFailureCollectionThroughput, 
-                backupFailureCollectionPartitionKey).Wait();
+                backupFailureCollectionPartitionKey,
+                this.Logger).Wait();
 
             string backupSuccessDatabaseName = ConfigurationManager.AppSettings["BackupSuccessDatabaseName"];
             string backupSuccessCollectionName = ConfigurationManager.AppSettings["BackupSuccessCollectionName"];
@@ -83,7 +90,8 @@ namespace Microsoft.CosmosDB.PITRWithRestore
                 backupSuccessDatabaseName,
                 backupSuccessCollectionName,
                 backupSuccessCollectionThroughput,
-                backupSuccessCollectionPartitionKey).Wait();
+                backupSuccessCollectionPartitionKey,
+                this.Logger).Wait();
         }
 
         /// <summary>

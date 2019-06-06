@@ -10,6 +10,8 @@ namespace Microsoft.CosmosDB.PITRWithRestore.CosmosDB
     using Microsoft.Azure.Documents.Client;
     using Microsoft.Azure.Documents;
 
+    using Microsoft.CosmosDB.PITRWithRestore.Logger;
+
     public class CosmosDBHelper
     {
         /// <summary>
@@ -26,7 +28,9 @@ namespace Microsoft.CosmosDB.PITRWithRestore.CosmosDB
             string databaseName,
             string collectionName,
             IEnumerable<Document> documentsToIngest,
-            int maxRetriesOnDocumentClientExceptions)
+            int maxRetriesOnDocumentClientExceptions,
+            string activityId,
+            ILogger logger)
         {
             int numRetries = 0;
             Uri documentsFeedLink = UriFactory.CreateDocumentCollectionUri(databaseName, collectionName);
@@ -42,7 +46,7 @@ namespace Microsoft.CosmosDB.PITRWithRestore.CosmosDB
                 {
                     if ((int)ex.StatusCode == 429)
                     {
-                        Console.WriteLine("Received rate limiting exception when attempting to read document: {0}. Retrying", documentsFeedLink);
+                        logger.WriteMessage(string.Format("{0} - Received rate limiting exception when attempting to create document: {1}. Retrying", activityId, documentsFeedLink));
 
                         // If the write is rate limited, wait for twice the recommended wait time specified in the exception
                         int sleepTime = (int)ex.RetryAfter.TotalMilliseconds * 2;
@@ -51,8 +55,6 @@ namespace Microsoft.CosmosDB.PITRWithRestore.CosmosDB
                         bool success = false;
                         while (!success && numRetries <= maxRetriesOnDocumentClientExceptions)
                         {
-                            Console.WriteLine("Received rate limiting exception when attempting to read document: {0}. Retrying", documentsFeedLink);
-
                             // Sleep for twice the recommended amount from the Cosmos DB rate limiting exception
                             Thread.Sleep(sleepTime);
 
@@ -64,13 +66,15 @@ namespace Microsoft.CosmosDB.PITRWithRestore.CosmosDB
                             {
                                 if ((int)e.StatusCode == 429)
                                 {
+                                    logger.WriteMessage(string.Format("{0} - Still rate limited when attempting to read document: {1}. Retrying", activityId, documentsFeedLink));
+
                                     sleepTime = (int)e.RetryAfter.TotalMilliseconds * 2;
                                     numRetries++;
                                 }
                             }
                             catch (Exception exception)
                             {
-                                Console.WriteLine("Caught Exception when retrying. Exception was: {0}. Will continue to retry.", exception.Message);
+                                logger.WriteMessage(string.Format("{0} - Caught Exception when retrying. Exception was: {1}. Will continue to retry.", activityId, exception.Message));
                                 numRetries++;
                             }
                         }
@@ -97,7 +101,9 @@ namespace Microsoft.CosmosDB.PITRWithRestore.CosmosDB
             string collectionName, 
             string partitionKey, 
             string id, 
-            int maxRetriesOnDocumentClientExceptions)
+            int maxRetriesOnDocumentClientExceptions,
+            string activityId,
+            ILogger logger)
         {
             int numRetries = 0;
             Uri documentsLink = UriFactory.CreateDocumentUri(databaseName, collectionName, id);
@@ -117,7 +123,7 @@ namespace Microsoft.CosmosDB.PITRWithRestore.CosmosDB
                 }
                 else if ((int)ex.StatusCode == 429)
                 {
-                    Console.WriteLine("Received rate limiting exception when attempting to read document: {0}. Retrying", documentsLink);
+                    logger.WriteMessage(string.Format("{0} - Received rate limiting exception when attempting to read document: {1}. Retrying", activityId, documentsLink));
 
                     // If the write is rate limited, wait for twice the recommended wait time specified in the exception
                     int sleepTime = (int)ex.RetryAfter.TotalMilliseconds * 2;
@@ -126,14 +132,13 @@ namespace Microsoft.CosmosDB.PITRWithRestore.CosmosDB
                     bool success = false;
                     while (!success && numRetries <= maxRetriesOnDocumentClientExceptions)
                     {
-                        Console.WriteLine("Received rate limiting exception when attempting to read document: {0}. Retrying", documentsLink);
-
                         // Sleep for twice the recommended amount from the Cosmos DB rate limiting exception
                         Thread.Sleep(sleepTime);
 
                         try
                         {
                             document = await client.ReadDocumentAsync(documentsLink);
+                            logger.WriteMessage(string.Format("{0} - Document: {1}. not found", activityId, documentsLink));
                         }
                         catch (DocumentClientException e)
                         {
@@ -143,13 +148,14 @@ namespace Microsoft.CosmosDB.PITRWithRestore.CosmosDB
                             }
                             else if ((int)e.StatusCode == 429)
                             {
+                                logger.WriteMessage(string.Format("{0} - Still rate limited when attempting to read document: {1}. Retrying", activityId, documentsLink));
                                 sleepTime = (int)e.RetryAfter.TotalMilliseconds * 2;
                                 numRetries++;
                             }
                         }
                         catch (Exception exception)
                         {
-                            Console.WriteLine("Caught Exception when retrying. Exception was: {0}. Will continue to retry.", exception.Message);
+                            logger.WriteMessage(string.Format("{0} - Caught Exception when retrying. Exception was: {1}. Will continue to retry.", activityId, exception.Message));
                             numRetries++;
                         }
                     }
@@ -175,7 +181,9 @@ namespace Microsoft.CosmosDB.PITRWithRestore.CosmosDB
             string collectionName,
             string partitionKey,
             string id,
-            int maxRetriesOnDocumentClientExceptions)
+            int maxRetriesOnDocumentClientExceptions,
+            string activityId,
+            ILogger logger)
         {
             int numRetries = 0;
             Uri documentsLink = UriFactory.CreateDocumentUri(databaseName, collectionName, id);
@@ -198,7 +206,7 @@ namespace Microsoft.CosmosDB.PITRWithRestore.CosmosDB
                 }
                 else if ((int)ex.StatusCode == 429)
                 {
-                    Console.WriteLine("Received rate limiting exception when attempting to read document: {0}. Retrying", documentsLink);
+                    logger.WriteMessage(string.Format("{0} - Received rate limiting exception when attempting to delete document with id: {1}. Retrying", activityId, id));
 
                     // If the write is rate limited, wait for twice the recommended wait time specified in the exception
                     int sleepTime = (int)ex.RetryAfter.TotalMilliseconds * 2;
@@ -206,8 +214,6 @@ namespace Microsoft.CosmosDB.PITRWithRestore.CosmosDB
                     // Custom retry logic to keep retrying when the document read is rate limited
                     while (!success && numRetries <= maxRetriesOnDocumentClientExceptions)
                     {
-                        Console.WriteLine("Received rate limiting exception when attempting to read document: {0}. Retrying", documentsLink);
-
                         // Sleep for twice the recommended amount from the Cosmos DB rate limiting exception
                         Thread.Sleep(sleepTime);
 
@@ -231,7 +237,7 @@ namespace Microsoft.CosmosDB.PITRWithRestore.CosmosDB
                         }
                         catch (Exception exception)
                         {
-                            Console.WriteLine("Caught Exception when retrying. Exception was: {0}. Will continue to retry.", exception.Message);
+                            logger.WriteMessage(string.Format("{0} - Caught Exception when retrying to delete document with id: {1}. Exception was: {2}", activityId, id, exception.Message));
                             numRetries++;
                         }
                     }
@@ -255,7 +261,9 @@ namespace Microsoft.CosmosDB.PITRWithRestore.CosmosDB
             string databaseName, 
             string collectionName, 
             object document, 
-            int maxRetriesOnDocumentClientExceptions)
+            int maxRetriesOnDocumentClientExceptions,
+            string activityId,
+            ILogger logger)
         {
             int numRetries = 0;
             Uri documentsFeedLink = UriFactory.CreateDocumentCollectionUri(databaseName, collectionName);
@@ -270,7 +278,7 @@ namespace Microsoft.CosmosDB.PITRWithRestore.CosmosDB
                 // Retry when rate limited for as many times as specified
                 if ((int)ex.StatusCode == 429)
                 {
-                    Console.WriteLine("Received rate limiting exception when attempting to upsert document.");
+                    logger.WriteMessage(string.Format("{0} - Received rate limiting exception when attempting to upsert document. Retrying", activityId));
 
                     // If the write is rate limited, wait for twice the recommended wait time specified in the exception
                     int sleepTime = (int)ex.RetryAfter.TotalMilliseconds * 2;
@@ -278,8 +286,6 @@ namespace Microsoft.CosmosDB.PITRWithRestore.CosmosDB
                     bool success = false;
                     while (!success && numRetries <= maxRetriesOnDocumentClientExceptions)
                     {
-                        Console.WriteLine("Waiting for twice the recommended time when rate limited");
-
                         // Sleep for twice the recommended amount from the Cosmos DB rate limiting exception
                         Thread.Sleep(sleepTime);
 
@@ -292,7 +298,7 @@ namespace Microsoft.CosmosDB.PITRWithRestore.CosmosDB
                         {
                             if((int)e.StatusCode == 429)
                             {
-                                Console.WriteLine("Still received an exception. Original  exception was: {0}", e.Message);
+                                logger.WriteMessage(string.Format("{0} - Still rate limited when attempting to upsert document. Retrying", activityId));
                                 sleepTime = (int)e.RetryAfter.TotalMilliseconds * 2;
                             }
                             
@@ -300,7 +306,7 @@ namespace Microsoft.CosmosDB.PITRWithRestore.CosmosDB
                         }
                         catch (Exception exception)
                         {
-                            Console.WriteLine("Caught Exception when retrying. Exception was: {0}. Will continue to retry.", exception.Message);
+                            logger.WriteMessage(string.Format("{0} - Caught Exception when retrying to upsert document. Exception was: {1}", activityId, exception.Message));
                             numRetries++;
                         }
                     }
@@ -326,7 +332,9 @@ namespace Microsoft.CosmosDB.PITRWithRestore.CosmosDB
             string documentId,
             object document,
             RequestOptions requestOptions,
-            int maxRetriesOnDocumentClientExceptions)
+            int maxRetriesOnDocumentClientExceptions,
+            string activityId,
+            ILogger logger)
         {
             int numRetries = 0;
             Uri documentUri = UriFactory.CreateDocumentUri(databaseName, collectionName, documentId);
@@ -340,7 +348,11 @@ namespace Microsoft.CosmosDB.PITRWithRestore.CosmosDB
                 // Retry when rate limited for as many times as specified
                 if ((int)ex.StatusCode == 429)
                 {
-                    Console.WriteLine("Received rate limiting exception when attempting to upsert document.");
+                    logger.WriteMessage(
+                        string.Format(
+                            "{0} - Received rate limiting exception when attempting to replace document with id: {1}. Retrying", 
+                            activityId, 
+                            documentId));
 
                     // If the write is rate limited, wait for twice the recommended wait time specified in the exception
                     int sleepTime = (int)ex.RetryAfter.TotalMilliseconds * 2;
@@ -348,8 +360,6 @@ namespace Microsoft.CosmosDB.PITRWithRestore.CosmosDB
                     bool success = false;
                     while (!success && numRetries <= maxRetriesOnDocumentClientExceptions)
                     {
-                        Console.WriteLine("Waiting for twice the recommended time when rate limited");
-
                         // Sleep for twice the recommended amount from the Cosmos DB rate limiting exception
                         Thread.Sleep(sleepTime);
 
@@ -362,7 +372,12 @@ namespace Microsoft.CosmosDB.PITRWithRestore.CosmosDB
                         {
                             if ((int)e.StatusCode == 429)
                             {
-                                Console.WriteLine("Still received an exception. Original  exception was: {0}", e.Message);
+                                logger.WriteMessage(
+                                    string.Format(
+                                        "{0} - Still rate limited when attempting to replace document with id: {1}. Retrying", 
+                                        activityId, 
+                                        documentId));
+
                                 sleepTime = (int)e.RetryAfter.TotalMilliseconds * 2;
                             }
 
@@ -370,7 +385,13 @@ namespace Microsoft.CosmosDB.PITRWithRestore.CosmosDB
                         }
                         catch (Exception exception)
                         {
-                            Console.WriteLine("Caught Exception when retrying. Exception was: {0}. Will continue to retry.", exception.Message);
+                            logger.WriteMessage(
+                                string.Format(
+                                    "{0} - Caught Exception when retrying to replace document with id: {1}. Exception was: {2}", 
+                                    activityId, 
+                                    documentId, 
+                                    exception.Message));
+
                             numRetries++;
                         }
                     }
@@ -394,7 +415,9 @@ namespace Microsoft.CosmosDB.PITRWithRestore.CosmosDB
             string databaseName,
             string collectionName,
             object document,
-            int maxRetriesOnDocumentClientExceptions)
+            int maxRetriesOnDocumentClientExceptions,
+            string activityId,
+            ILogger logger)
         {
             int numRetries = 0;
             Uri documentsFeedLink = UriFactory.CreateDocumentCollectionUri(databaseName, collectionName);
@@ -409,7 +432,10 @@ namespace Microsoft.CosmosDB.PITRWithRestore.CosmosDB
                 // Retry when rate limited for as many times as specified
                 if ((int)ex.StatusCode == 429)
                 {
-                    Console.WriteLine("Received rate limiting exception when attempting to upsert document.");
+                    logger.WriteMessage(
+                        string.Format(
+                            "{0} - Received rate limiting exception when attempting to create document. Retrying",
+                            activityId));
 
                     // If the write is rate limited, wait for twice the recommended wait time specified in the exception
                     int sleepTime = (int)ex.RetryAfter.TotalMilliseconds * 2;
@@ -417,8 +443,6 @@ namespace Microsoft.CosmosDB.PITRWithRestore.CosmosDB
                     bool success = false;
                     while (!success && numRetries <= maxRetriesOnDocumentClientExceptions)
                     {
-                        Console.WriteLine("Waiting for twice the recommended time when rate limited");
-
                         // Sleep for twice the recommended amount from the Cosmos DB rate limiting exception
                         Thread.Sleep(sleepTime);
 
@@ -431,7 +455,11 @@ namespace Microsoft.CosmosDB.PITRWithRestore.CosmosDB
                         {
                             if ((int)e.StatusCode == 429)
                             {
-                                Console.WriteLine("Still received an exception. Original  exception was: {0}", e.Message);
+                                logger.WriteMessage(
+                                    string.Format(
+                                        "{0} - Still rate limited when attempting to create document. Retrying",
+                                        activityId));
+
                                 sleepTime = (int)e.RetryAfter.TotalMilliseconds * 2;
                             }
 
@@ -439,7 +467,12 @@ namespace Microsoft.CosmosDB.PITRWithRestore.CosmosDB
                         }
                         catch (Exception exception)
                         {
-                            Console.WriteLine("Caught Exception when retrying. Exception was: {0}. Will continue to retry.", exception.Message);
+                            logger.WriteMessage(
+                                string.Format(
+                                    "{0} - Caught Exception when retrying to create document. Exception was: {1}",
+                                    activityId,
+                                    exception.Message));
+
                             numRetries++;
                         }
                     }
@@ -492,6 +525,8 @@ namespace Microsoft.CosmosDB.PITRWithRestore.CosmosDB
             string collectionName, 
             int throughput, 
             string partitionKey,
+            ILogger logger,
+            bool indexAllProperties = false,
             bool deleteExistingColl = false)
         {
             await client.CreateDatabaseIfNotExistsAsync(new Database { Id = databaseName });
@@ -509,18 +544,26 @@ namespace Microsoft.CosmosDB.PITRWithRestore.CosmosDB
                 {
                     if (!deleteExistingColl)
                     {
-                        Console.WriteLine("Collection already present, returning...");
+                        logger.WriteMessage(string.Format("{0} - Collection already present. Continuing without delete...", collectionName));
                     }
                     else
                     {
-                        Console.WriteLine("Collection present. Deleting collection...");
                         await client.DeleteDocumentCollectionAsync(string.Format("/dbs/{0}/colls/{1}", databaseName, collectionName));
-                        Console.WriteLine("Finished deleting the collection.");
-
+                        
+                        IndexingPolicy policy = new IndexingPolicy();
+                        if(!indexAllProperties)
+                        {
+                            policy.Automatic = false;
+                            policy.IndexingMode = IndexingMode.None;
+                            policy.IncludedPaths.Clear();
+                            policy.ExcludedPaths.Clear();
+                        }
                         await client.CreateDocumentCollectionAsync(
                             UriFactory.CreateDatabaseUri(databaseName),
-                            new DocumentCollection { Id = collectionName, PartitionKey = pkDefn },
+                            new DocumentCollection { Id = collectionName, PartitionKey = pkDefn, IndexingPolicy = policy },
                             new RequestOptions { OfferThroughput = throughput });
+
+                        logger.WriteMessage(string.Format("{0} - Collection was already present. Deleted and recreated the collection...", collectionName));
                     }
                 }
             }
@@ -528,23 +571,32 @@ namespace Microsoft.CosmosDB.PITRWithRestore.CosmosDB
             {
                 if ((int)dce.StatusCode == 404)
                 {
-                    Console.WriteLine("Collection not found, creating...");
                     try
                     {
+                        IndexingPolicy policy = new IndexingPolicy();
+                        if (!indexAllProperties)
+                        {
+                            policy.Automatic = false;
+                            policy.IndexingMode = IndexingMode.None;
+                            policy.IncludedPaths.Clear();
+                            policy.ExcludedPaths.Clear();
+                        }
+
                         await client.CreateDocumentCollectionAsync(
                             UriFactory.CreateDatabaseUri(databaseName),
-                            new DocumentCollection { Id = collectionName, PartitionKey = pkDefn },
+                            new DocumentCollection { Id = collectionName, PartitionKey = pkDefn, IndexingPolicy = policy },
                             new RequestOptions { OfferThroughput = throughput });
-                        Console.WriteLine("Successfully created new collection.");
+
+                        logger.WriteMessage(string.Format("{0} - Collection was not present. Successfully created the collection", collectionName));
                     }
                     catch (Exception ex)
                     {
-                        Console.WriteLine("Exception thrown when attempting to create collection: {0} in database: {1}. Exception message: {2}",
-                            collectionName,
-                            databaseName,
-                            ex.Message);
+                        logger.WriteMessage(string.Format(
+                            "Exception thrown when attempting to create the collection {0} in database: {1}: with message: {2}", 
+                            collectionName, 
+                            databaseName, 
+                            ex.Message));
                     }
-                    
                 }
                 else
 

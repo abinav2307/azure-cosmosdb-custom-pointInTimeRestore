@@ -18,6 +18,7 @@ namespace Microsoft.CosmosDB.PITRWithRestore
     using Microsoft.CosmosDB.PITRWithRestore.BlobStorage;
     using Microsoft.CosmosDB.PITRWithRestore.CosmosDB;
     using Microsoft.CosmosDB.PITRWithRestore.Backup;
+    using Microsoft.CosmosDB.PITRWithRestore.Logger;
 
     using Newtonsoft.Json.Linq;
 
@@ -40,9 +41,24 @@ namespace Microsoft.CosmosDB.PITRWithRestore
         private DocumentClient DocumentClient;
 
         /// <summary>
+        /// Logger to push messages during run time
+        /// </summary>
+        private ILogger Logger;
+
+        /// <summary>
+        /// /ActivityId generated as a Guid and used for logging to LogAnalytics
+        /// </summary>
+        private Guid GuidForLogAnalytics;
+
+        /// <summary>
         /// Max number of retries on rate limited writes to the specified Blob Storage account
         /// </summary>
         private int MaxRetriesOnRateLimitedWritesToBlobAccount = 10;
+
+        /// <summary>
+        /// Boolean flag to turn on/off compression when backing up the data to Blob Storage
+        /// </summary>
+        private bool UseCompression;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="DocumentFeedObserver" /> class.
@@ -51,6 +67,8 @@ namespace Microsoft.CosmosDB.PITRWithRestore
         {
             this.CloudBlobClient = cloudBlobClient;
             this.DocumentClient = client;
+            this.Logger = new LogAnalyticsLogger();
+            this.UseCompression = bool.Parse(ConfigurationManager.AppSettings["UseCompression"]);
         }
 
         /// <summary>
@@ -85,10 +103,120 @@ namespace Microsoft.CosmosDB.PITRWithRestore
         /// <returns>A Task to allow asynchronous execution</returns>
         public Task ProcessChangesAsync(IChangeFeedObserverContext context, IReadOnlyList<Document> docs, CancellationToken cancellationToken)
         {
-            // Get Gzip compressed JArray, storing all documents returned from ChangeFeed for this PartitionKeyRangeId
-            this.CompressDocumentsAndWriteToBlob(context.PartitionKeyRangeId, docs);
+            // Generate a new GUID as an ActivityId for this specific execution of Change Feed
+            this.GuidForLogAnalytics = Guid.NewGuid();
+
+            if (this.UseCompression)
+            {
+                // Get Gzip compressed JArray, storing all documents returned from ChangeFeed for this PartitionKeyRangeId
+                this.CompressDocumentsAndWriteToBlob(context.PartitionKeyRangeId, docs);
+            }
+            else
+            {
+                this.WriteUncompressedDataToBlob(context.PartitionKeyRangeId, docs);
+            }
 
             return Task.CompletedTask;
+        }
+
+        private void WriteDataToBlobStorage(JArray jArrayOfChangedDocs, DateTime minTimeStamp, DateTime maxTimeStamp, string partitionId)
+        {
+            // Set the filename for the destination file in Blob Storage to be a combination of the min and max timestamps
+            // across all documents returned by ChangeFeedProcessor
+            string fileName = string.Concat(
+                minTimeStamp.ToString("yyyyMMddTHH:mm:ss"),
+                "-",
+                maxTimeStamp.ToString("yyyyMMddTHH:mm:ss"),
+                "-",
+                jArrayOfChangedDocs.Count);
+
+            string textToBackup = jArrayOfChangedDocs.ToString();
+
+            string containerName = string.Concat("backup-", partitionId);
+
+            CloudBlobContainer cloudBlobContainer = this.CloudBlobClient.GetContainerReference(containerName);
+            cloudBlobContainer.CreateIfNotExists();
+
+            CloudBlockBlob blockBlob = cloudBlobContainer.GetBlockBlobReference(fileName);
+            if (blockBlob.Exists())
+            {
+                try
+                {
+                    fileName = string.Concat(fileName, "-", Guid.NewGuid());
+                    blockBlob = cloudBlobContainer.GetBlockBlobReference(fileName);
+
+                    BlobStorageHelper.WriteStringToBlobStorage(blockBlob, textToBackup, this.MaxRetriesOnRateLimitedWritesToBlobAccount);
+
+                    this.Logger.WriteMessage(string.Format("ActivityId: {0} - Successfully wrote compressed data to blob storage with file name: {1}", this.GuidForLogAnalytics.ToString(), fileName));
+
+                    this.TrackSuccessfulBatchesOfBackups(containerName, jArrayOfChangedDocs.Count);
+                }
+                catch (Exception ex)
+                {
+                    //this.TrackFailedBatchesOfBackups(containerName, fileName, docs.Count, compressedByteArray, ex);
+                }
+            }
+            else
+            {
+                try
+                {
+                    BlobStorageHelper.WriteStringToBlobStorage(blockBlob, textToBackup, this.MaxRetriesOnRateLimitedWritesToBlobAccount);
+
+                    this.Logger.WriteMessage(string.Format("ActivityId: {0} - Successfully wrote uncompressed data to blob storage with file name: {1}", this.GuidForLogAnalytics.ToString(), fileName));
+
+                    this.TrackSuccessfulBatchesOfBackups(containerName, jArrayOfChangedDocs.Count);
+                }
+                catch (Exception ex)
+                {
+                    //this.TrackFailedBatchesOfBackups(containerName, fileName, docs.Count, compressedByteArray, ex);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Backs up the documents received from the Change Feed Processor without compression
+        /// </summary>
+        /// <param name="partitionId">The partition within which these documents were written or modified</param>
+        /// <param name="docs">The modified or newly created documents</param>
+        private void WriteUncompressedDataToBlob(string partitionId, IReadOnlyList<Document> docs)
+        {
+            int maxDocumentsPerBlobFile = int.Parse(ConfigurationManager.AppSettings["MaxBackupsPerBlobFile"]);
+
+            DateTime maxTimeStamp = DateTime.MinValue;
+            DateTime minTimeStamp = DateTime.MaxValue;
+            JArray jArrayOfChangedDocs = new JArray();
+
+            // Store the documents as a JArray and keep track of the max timestamp across all documents
+            foreach (Document doc in docs)
+            {
+                JObject eachDocumentAsJObject = JObject.Parse(doc.ToString());
+                jArrayOfChangedDocs.Add(eachDocumentAsJObject);
+
+                if (DateTime.Compare(maxTimeStamp, doc.Timestamp) < 0)
+                {
+                    maxTimeStamp = doc.Timestamp;
+                }
+                if (DateTime.Compare(minTimeStamp, doc.Timestamp) > 0)
+                {
+                    minTimeStamp = doc.Timestamp;
+                }
+
+                // Batch the modified or newly created documents prior to backing them up to the specified Azure Blob Storage account
+                if (jArrayOfChangedDocs.Count > maxDocumentsPerBlobFile)
+                {
+                    this.WriteDataToBlobStorage(jArrayOfChangedDocs, minTimeStamp, maxTimeStamp, partitionId);
+
+                    maxTimeStamp = DateTime.MinValue;
+                    minTimeStamp = DateTime.MaxValue;
+
+                    jArrayOfChangedDocs.Clear();
+                }
+            }
+
+            if (jArrayOfChangedDocs.Count > 0)
+            {
+                this.WriteDataToBlobStorage(jArrayOfChangedDocs, minTimeStamp, maxTimeStamp, partitionId);
+            }
         }
 
         /// <summary>
@@ -98,10 +226,8 @@ namespace Microsoft.CosmosDB.PITRWithRestore
         /// <param name="fileName">The file name, which is just the timestamp at which the data is being written with the doc count appended to it</param>
         /// <param name="compressedByteArray">The compressed byte array, which is a JArray of at most 100 documents, with the Json string Gzip compressed for 
         /// efficient storage into Blob Storage</param>
-        private void WriteCompressedDataToBlob(string partitionId, string fileName, IReadOnlyList<Document> docs, byte[] compressedByteArray)
+        private void WriteCompressedDataToBlob(string partitionId, string fileName, int docCount, byte[] compressedByteArray)
         {
-            Console.WriteLine("Retrieved {0} documents from ChangeFeed", docs.Count);
-
             string containerName = string.Concat("backup-", partitionId);
 
             CloudBlobContainer cloudBlobContainer = this.CloudBlobClient.GetContainerReference(containerName);
@@ -119,16 +245,19 @@ namespace Microsoft.CosmosDB.PITRWithRestore
                         blockBlob = cloudBlobContainer.GetBlockBlobReference(fileName);
 
                         BlobStorageHelper.WriteToBlobStorage(blockBlob, compressedByteArray, this.MaxRetriesOnRateLimitedWritesToBlobAccount);
-                        this.TrackSuccessfulBatchesOfBackups(containerName, docs);
+
+                        this.Logger.WriteMessage(string.Format("ActivityId: {0} - Successfully wrote compressed data to blob storage with file name: {1}", this.GuidForLogAnalytics.ToString(), fileName));
+
+                        this.TrackSuccessfulBatchesOfBackups(containerName, docCount);
                     }
                     catch (Exception ex)
                     {
-                        this.TrackFailedBatchesOfBackups(containerName, fileName, docs.Count, compressedByteArray, ex);
+                        this.TrackFailedBatchesOfBackups(containerName, fileName, docCount, compressedByteArray, ex);
                     }
                 }
                 else
                 {
-                    this.TrackFailedBatchesOfBackups(containerName, fileName, docs.Count, compressedByteArray, null);
+                    this.TrackFailedBatchesOfBackups(containerName, fileName, docCount, compressedByteArray, null);
                 }
             }
             else
@@ -136,11 +265,14 @@ namespace Microsoft.CosmosDB.PITRWithRestore
                 try
                 {
                     BlobStorageHelper.WriteToBlobStorage(blockBlob, compressedByteArray, this.MaxRetriesOnRateLimitedWritesToBlobAccount);
-                    this.TrackSuccessfulBatchesOfBackups(containerName, docs);
+
+                    this.Logger.WriteMessage(string.Format("ActivityId: {0} - Successfully wrote compressed data to blob storage with file name: {1}", this.GuidForLogAnalytics.ToString(), fileName));
+
+                    this.TrackSuccessfulBatchesOfBackups(containerName, docCount);
                 }
                 catch (Exception ex)
                 {
-                    this.TrackFailedBatchesOfBackups(containerName, fileName, docs.Count, compressedByteArray, ex);
+                    this.TrackFailedBatchesOfBackups(containerName, fileName, docCount, compressedByteArray, ex);
                 }
             }
         }
@@ -169,10 +301,8 @@ namespace Microsoft.CosmosDB.PITRWithRestore
         /// </summary>
         /// <param name="containerName">Name of the Blob Storage container containing the backups</param>
         /// <param name="docs">List of documents successfully backed up to the specified Blob Storage account</param>
-        private void TrackSuccessfulBatchesOfBackups(string containerName, IReadOnlyList<Document> docs)
+        private void TrackSuccessfulBatchesOfBackups(string containerName, int docCount)
         {
-            Console.WriteLine("Tracking successful backups to Cosmos DB collection tracking successful backups");
-
             string backupSuccessDatabaseName = ConfigurationManager.AppSettings["BackupSuccessDatabaseName"];
             string backupSuccessCollectionName = ConfigurationManager.AppSettings["BackupSuccessCollectionName"];
             Uri documentsFeedLink = UriFactory.CreateDocumentCollectionUri(backupSuccessDatabaseName, backupSuccessCollectionName);
@@ -187,18 +317,30 @@ namespace Microsoft.CosmosDB.PITRWithRestore
                 backupSuccessCollectionName, 
                 containerName, 
                 containerName,
-                this.MaxRetriesOnRateLimitedWritesToBlobAccount).Result;
+                this.MaxRetriesOnRateLimitedWritesToBlobAccount,
+                this.GuidForLogAnalytics.ToString(),
+                this.Logger).Result;
 
             if(document == null)
             {
-                backupSuccessDocument.DocumentCount = docs.Count;
+                backupSuccessDocument.DocumentCount = docCount;
 
                 document = CosmosDBHelper.CreateDocumentAsync(
                     this.DocumentClient, 
                     backupSuccessDatabaseName, 
                     backupSuccessCollectionName, 
                     backupSuccessDocument, 
-                    this.MaxRetriesOnRateLimitedWritesToBlobAccount).Result;
+                    this.MaxRetriesOnRateLimitedWritesToBlobAccount,
+                this.GuidForLogAnalytics.ToString(),
+                this.Logger).Result;
+
+                this.Logger.WriteMessage(
+                    string.Format(
+                        "ActivityId: {0} - {1} - Updated successful backup to container : {2} to {3}", 
+                        this.GuidForLogAnalytics.ToString(), 
+                        backupSuccessCollectionName, 
+                        containerName, 
+                        backupSuccessDocument.DocumentCount));
             }
             else
             {
@@ -208,7 +350,7 @@ namespace Microsoft.CosmosDB.PITRWithRestore
                 while (!success && numAttemptsIfConflict < this.MaxRetriesOnRateLimitedWritesToBlobAccount)
                 {
                     int currentSuccessCount = document.Resource.GetPropertyValue<int>("documentCount");
-                    backupSuccessDocument.DocumentCount = currentSuccessCount + docs.Count;
+                    backupSuccessDocument.DocumentCount = currentSuccessCount + docCount;
 
                     var ac = new AccessCondition { Condition = document.Resource.ETag, Type = AccessConditionType.IfMatch };
                     RequestOptions requestOptions = new RequestOptions { AccessCondition = ac };
@@ -220,7 +362,9 @@ namespace Microsoft.CosmosDB.PITRWithRestore
                         containerName,
                         backupSuccessDocument,
                         requestOptions,
-                        this.MaxRetriesOnRateLimitedWritesToBlobAccount).Result;
+                        this.MaxRetriesOnRateLimitedWritesToBlobAccount,
+                        this.GuidForLogAnalytics.ToString(),
+                        this.Logger).Result;
 
                     numAttemptsIfConflict++;
 
@@ -232,11 +376,29 @@ namespace Microsoft.CosmosDB.PITRWithRestore
                             backupSuccessCollectionName,
                             containerName,
                             containerName,
-                            this.MaxRetriesOnRateLimitedWritesToBlobAccount).Result;                        
+                            this.MaxRetriesOnRateLimitedWritesToBlobAccount,
+                            this.GuidForLogAnalytics.ToString(),
+                            this.Logger).Result;
+
+                        this.Logger.WriteMessage(
+                            string.Format(
+                                "ActivityId: {0} - {1} - Retrying update of successful backup to container : {2} to {3} due to ETag mismatch on the server",
+                                this.GuidForLogAnalytics.ToString(),
+                                backupSuccessCollectionName,
+                                containerName,
+                                backupSuccessDocument.DocumentCount));
                     }
                     else
                     {
                         success = true;
+
+                        this.Logger.WriteMessage(
+                            string.Format(
+                                "ActivityId: {0} - {1} - Updated successful backup to container : {2} to {3}",
+                                this.GuidForLogAnalytics.ToString(),
+                                backupSuccessCollectionName,
+                                containerName,
+                                backupSuccessDocument.DocumentCount));
                     }
                 }                
             }
@@ -253,8 +415,6 @@ namespace Microsoft.CosmosDB.PITRWithRestore
         /// <param name="ex">Exception which caused this backup to not be persisted in the specified blob storage account</param>
         private void TrackFailedBatchesOfBackups(string containerName, string fileName, int docCountInBackup, byte[] docs, Exception ex)
         {
-            Console.WriteLine("Tracking failed backups to Cosmos DB collecion tracking failures during backup process");
-
             string backupFailureDatabaseName = ConfigurationManager.AppSettings["BackupFailureDatabaseName"];
             string backupFailureCollectionName = ConfigurationManager.AppSettings["BackupFailureCollectionName"];
             
@@ -294,35 +454,21 @@ namespace Microsoft.CosmosDB.PITRWithRestore
                 backupFailureDatabaseName, 
                 backupFailureCollectionName, 
                 backupFailureDocument, 
-                this.MaxRetriesOnRateLimitedWritesToBlobAccount).Wait();
+                this.MaxRetriesOnRateLimitedWritesToBlobAccount,
+                this.GuidForLogAnalytics.ToString(),
+                this.Logger).Wait();
+
+            this.Logger.WriteMessage(
+                string.Format(
+                    "ActivityId: {0} - {1} - Updated failed backup to container : {2} due to exception : {3}",
+                    this.GuidForLogAnalytics.ToString(),
+                    backupFailureCollectionName,
+                    containerName,
+                    backupFailureDocument.ToString));
         }
 
-        /// <summary>
-        /// Takes an input list of documents which have been returned by ChangeFeed for processing, and returns a GZip compressed byte array
-        /// </summary>
-        /// <param name="docs">List of documents which have been returned by ChangeFeed for processing</param>
-        /// <returns></returns>
-        private void CompressDocumentsAndWriteToBlob(string partitionKeyRangeId, IReadOnlyList<Document> docs)
+        private byte[] CompressDocumentsInJArray(JArray jArrayOfChangedDocs)
         {
-            // 1. Store the documents as a JArray and keep track of the max timestamp across all documents
-            DateTime maxTimeStamp = DateTime.MinValue;
-            DateTime minTimeStamp = DateTime.MaxValue;
-            JArray jArrayOfChangedDocs = new JArray();
-            foreach (Document doc in docs)
-            {
-                JObject eachDocumentAsJObject = JObject.Parse(doc.ToString());
-                jArrayOfChangedDocs.Add(eachDocumentAsJObject);
-                
-                if (DateTime.Compare(maxTimeStamp, doc.Timestamp) < 0)
-                {
-                    maxTimeStamp = doc.Timestamp;
-                }
-                if (DateTime.Compare(minTimeStamp, doc.Timestamp) > 0)
-                {
-                    minTimeStamp = doc.Timestamp;
-                }
-            }
-
             // 2. Serialize the JArray and compress its contents (GZip compression)
             string jArraySerialized = jArrayOfChangedDocs.ToString();
 
@@ -339,21 +485,93 @@ namespace Microsoft.CosmosDB.PITRWithRestore
             sw.Dispose();
             ms.Dispose();
 
-            // 3. Set the filename for the destination file in Blob Storage to be a combination of the min and max timestamps
-            // across all documents returned by ChangeFeedProcessor
-            string fileName = string.Concat(
-                minTimeStamp.ToString("yyyyMMddTHH:mm:ss"), 
-                "-", 
-                maxTimeStamp.ToString("yyyyMMddTHH:mm:ss"),
-                "-",
-                docs.Count);
+            return bytes;
+        }
 
-            // 4. Write the compressed data to blob storage
-            // Container name is the Partition's Id
-            // Filename is the timestamp at which the data should be written
-            this.WriteCompressedDataToBlob(partitionKeyRangeId, fileName, docs, bytes);
+        /// <summary>
+        /// Takes an input list of documents which have been returned by ChangeFeed for processing, and returns a GZip compressed byte array
+        /// </summary>
+        /// <param name="docs">List of documents which have been returned by ChangeFeed for processing</param>
+        /// <returns></returns>
+        private void CompressDocumentsAndWriteToBlob(string partitionKeyRangeId, IReadOnlyList<Document> docs)
+        {
+            int maxDocumentsPerBlobFile = int.Parse(ConfigurationManager.AppSettings["MaxBackupsPerBlobFile"]);
 
-            Console.WriteLine("Successfully write compressed file to blob account with name: {0}", fileName);
+            // 1. Store the documents as a JArray and keep track of the max timestamp across all documents
+            DateTime maxTimeStamp = DateTime.MinValue;
+            DateTime minTimeStamp = DateTime.MaxValue;
+            JArray jArrayOfChangedDocs = new JArray();
+
+            foreach (Document doc in docs)
+            {
+                JObject eachDocumentAsJObject = JObject.Parse(doc.ToString());
+                jArrayOfChangedDocs.Add(eachDocumentAsJObject);
+                
+                if (DateTime.Compare(maxTimeStamp, doc.Timestamp) < 0)
+                {
+                    maxTimeStamp = doc.Timestamp;
+                }
+                if (DateTime.Compare(minTimeStamp, doc.Timestamp) > 0)
+                {
+                    minTimeStamp = doc.Timestamp;
+                }
+
+                // Batch the modified or newly created documents prior to backing them up to the specified Azure Blob Storage account
+                if (jArrayOfChangedDocs.Count > maxDocumentsPerBlobFile)
+                {
+                    byte[] bytes = CompressDocumentsInJArray(jArrayOfChangedDocs);
+
+                    // 3. Set the filename for the destination file in Blob Storage to be a combination of the min and max timestamps
+                    // across all documents returned by ChangeFeedProcessor
+                    string fileName = string.Concat(
+                        minTimeStamp.ToString("yyyyMMddTHH:mm:ss"),
+                        "-",
+                        maxTimeStamp.ToString("yyyyMMddTHH:mm:ss"),
+                        "-",
+                        jArrayOfChangedDocs.Count);
+
+                    this.Logger.WriteMessage(
+                        string.Format("ActivityId: {0} - Created compressed backups with file name: {1} with doc count = {2}",
+                            this.GuidForLogAnalytics.ToString(),
+                            fileName,
+                            jArrayOfChangedDocs.Count));
+
+                    // 4. Write the compressed data to blob storage
+                    // Container name is the Partition's Id
+                    // Filename is the timestamp at which the data should be written
+                    this.WriteCompressedDataToBlob(partitionKeyRangeId, fileName, jArrayOfChangedDocs.Count, bytes);
+
+                    maxTimeStamp = DateTime.MinValue;
+                    minTimeStamp = DateTime.MaxValue;
+
+                    jArrayOfChangedDocs.Clear();
+                }
+            }
+
+            if (jArrayOfChangedDocs.Count > 0)
+            {
+                byte[] bytes = CompressDocumentsInJArray(jArrayOfChangedDocs);
+
+                // 3. Set the filename for the destination file in Blob Storage to be a combination of the min and max timestamps
+                // across all documents returned by ChangeFeedProcessor
+                string fileName = string.Concat(
+                    minTimeStamp.ToString("yyyyMMddTHH:mm:ss"),
+                    "-",
+                    maxTimeStamp.ToString("yyyyMMddTHH:mm:ss"),
+                    "-",
+                    jArrayOfChangedDocs.Count);
+
+                this.Logger.WriteMessage(
+                    string.Format("ActivityId: {0} - Created compressed backups with file name: {1} with doc count = {2}",
+                        this.GuidForLogAnalytics.ToString(),
+                        fileName,
+                        jArrayOfChangedDocs.Count));
+
+                // 4. Write the compressed data to blob storage
+                // Container name is the Partition's Id
+                // Filename is the timestamp at which the data should be written
+                this.WriteCompressedDataToBlob(partitionKeyRangeId, fileName, jArrayOfChangedDocs.Count, bytes);
+            }
         }    
     }
 }
