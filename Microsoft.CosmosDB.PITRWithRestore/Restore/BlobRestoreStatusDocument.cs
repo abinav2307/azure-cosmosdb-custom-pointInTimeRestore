@@ -28,5 +28,11 @@ namespace Microsoft.CosmosDB.PITRWithRestore.Restore
         /// </summary>
         [JsonProperty(PropertyName = "status")]
         public string Status { get; set; }
+
+        /// <summary>
+        /// Number of documents restored for the container
+        /// </summary>
+        [JsonProperty(PropertyName = "documentCount")]
+        public long DocumentCount { get; set; }
     }
 }
