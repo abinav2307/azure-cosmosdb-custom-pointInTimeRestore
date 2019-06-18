@@ -149,7 +149,7 @@ namespace Microsoft.CosmosDB.PITRWithRestore
 
                     this.Logger.WriteMessage(string.Format("ActivityId: {0} - Successfully wrote compressed data to blob storage with file name: {1}", this.GuidForLogAnalytics.ToString(), fileName));
 
-                    this.TrackSuccessfulBatchesOfBackups(containerName, jArrayOfChangedDocs.Count);
+                    this.TrackSuccessfulBatchesOfBackups(containerName, jArrayOfChangedDocs.Count, maxTimeStamp);
                 }
                 catch (Exception ex)
                 {
@@ -164,7 +164,7 @@ namespace Microsoft.CosmosDB.PITRWithRestore
 
                     this.Logger.WriteMessage(string.Format("ActivityId: {0} - Successfully wrote uncompressed data to blob storage with file name: {1}", this.GuidForLogAnalytics.ToString(), fileName));
 
-                    this.TrackSuccessfulBatchesOfBackups(containerName, jArrayOfChangedDocs.Count);
+                    this.TrackSuccessfulBatchesOfBackups(containerName, jArrayOfChangedDocs.Count, maxTimeStamp);
                 }
                 catch (Exception ex)
                 {
@@ -226,7 +226,7 @@ namespace Microsoft.CosmosDB.PITRWithRestore
         /// <param name="fileName">The file name, which is just the timestamp at which the data is being written with the doc count appended to it</param>
         /// <param name="compressedByteArray">The compressed byte array, which is a JArray of at most 100 documents, with the Json string Gzip compressed for 
         /// efficient storage into Blob Storage</param>
-        private void WriteCompressedDataToBlob(string partitionId, string fileName, int docCount, byte[] compressedByteArray)
+        private void WriteCompressedDataToBlob(string partitionId, string fileName, int docCount, byte[] compressedByteArray, DateTime maxTimestampOfBackedUpDocuments)
         {
             string containerName = string.Concat("backup-", partitionId);
 
@@ -248,7 +248,7 @@ namespace Microsoft.CosmosDB.PITRWithRestore
 
                         this.Logger.WriteMessage(string.Format("ActivityId: {0} - Successfully wrote compressed data to blob storage with file name: {1}", this.GuidForLogAnalytics.ToString(), fileName));
 
-                        this.TrackSuccessfulBatchesOfBackups(containerName, docCount);
+                        this.TrackSuccessfulBatchesOfBackups(containerName, docCount, maxTimestampOfBackedUpDocuments);
                     }
                     catch (Exception ex)
                     {
@@ -268,7 +268,7 @@ namespace Microsoft.CosmosDB.PITRWithRestore
 
                     this.Logger.WriteMessage(string.Format("ActivityId: {0} - Successfully wrote compressed data to blob storage with file name: {1}", this.GuidForLogAnalytics.ToString(), fileName));
 
-                    this.TrackSuccessfulBatchesOfBackups(containerName, docCount);
+                    this.TrackSuccessfulBatchesOfBackups(containerName, docCount, maxTimestampOfBackedUpDocuments);
                 }
                 catch (Exception ex)
                 {
@@ -301,7 +301,8 @@ namespace Microsoft.CosmosDB.PITRWithRestore
         /// </summary>
         /// <param name="containerName">Name of the Blob Storage container containing the backups</param>
         /// <param name="docs">List of documents successfully backed up to the specified Blob Storage account</param>
-        private void TrackSuccessfulBatchesOfBackups(string containerName, int docCount)
+        /// <param name="maxTimestampOfBackedUpDocuments">Max timestamp of documents backed up in this shard for the source container</param>
+        private void TrackSuccessfulBatchesOfBackups(string containerName, int docCount, DateTime maxTimestampOfBackedUpDocuments)
         {
             string backupSuccessDatabaseName = ConfigurationManager.AppSettings["BackupSuccessDatabaseName"];
             string backupSuccessCollectionName = ConfigurationManager.AppSettings["BackupSuccessCollectionName"];
@@ -310,7 +311,9 @@ namespace Microsoft.CosmosDB.PITRWithRestore
             BackupSuccessDocument backupSuccessDocument = new BackupSuccessDocument();
             backupSuccessDocument.ContainerName = containerName;
             backupSuccessDocument.Id = containerName;
-            
+            backupSuccessDocument.MaxTimestampOfBackedUpDocments = 
+                maxTimestampOfBackedUpDocuments.ToUniversalTime().ToString("MM/dd/yyyy HH:mm:ss");
+
             ResourceResponse<Document> document = CosmosDBHelper.ReadDocmentAsync(
                 this.DocumentClient, 
                 backupSuccessDatabaseName,
@@ -539,7 +542,7 @@ namespace Microsoft.CosmosDB.PITRWithRestore
                     // 4. Write the compressed data to blob storage
                     // Container name is the Partition's Id
                     // Filename is the timestamp at which the data should be written
-                    this.WriteCompressedDataToBlob(partitionKeyRangeId, fileName, jArrayOfChangedDocs.Count, bytes);
+                    this.WriteCompressedDataToBlob(partitionKeyRangeId, fileName, jArrayOfChangedDocs.Count, bytes, maxTimeStamp);
 
                     maxTimeStamp = DateTime.MinValue;
                     minTimeStamp = DateTime.MaxValue;
@@ -570,7 +573,7 @@ namespace Microsoft.CosmosDB.PITRWithRestore
                 // 4. Write the compressed data to blob storage
                 // Container name is the Partition's Id
                 // Filename is the timestamp at which the data should be written
-                this.WriteCompressedDataToBlob(partitionKeyRangeId, fileName, jArrayOfChangedDocs.Count, bytes);
+                this.WriteCompressedDataToBlob(partitionKeyRangeId, fileName, jArrayOfChangedDocs.Count, bytes, maxTimeStamp);
             }
         }    
     }
