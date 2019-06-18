@@ -69,9 +69,9 @@ namespace Microsoft.CosmosDB.PITRWithRestore.Restore
         private int MaxRetriesOnDocumentClientExceptions = 10;
 
         /// <summary>
-        /// Total Count of documents restored thus far
+        /// For Epoch time conversions using midnight on January 1, 1970
         /// </summary>
-        private long CountOfDocumentsRestored;
+        private static readonly DateTime epoch = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc);
 
         /// <summary>
         /// The collection to which the data will be restored
@@ -99,6 +99,11 @@ namespace Microsoft.CosmosDB.PITRWithRestore.Restore
         private bool CompletedRestoringFromBlobContainers;
 
         /// <summary>
+        /// Number of leases acquired on blob containers containing backups to be restored
+        /// </summary>
+        private long NumberOfBlobContainerLeasesAcquired;
+
+        /// <summary>
         /// Logger to push messages during run time
         /// </summary>
         private ILogger Logger;
@@ -112,12 +117,13 @@ namespace Microsoft.CosmosDB.PITRWithRestore.Restore
         {
             this.DocumentClient = documentClient;
             this.HostName = hostName;
-            this.CountOfDocumentsRestored = 0;
             this.ContainersToRestore = new List<string>();
             this.ContainersToRestoreInParallel = new List<string>();
             this.ContainerToDocCountRestoredMapper = new ConcurrentDictionary<string, int>();
             this.CompletedRestoringFromBlobContainers = false;
-            this.Logger = new LogAnalyticsLogger();
+
+            this.Logger = new ConsoleLogger();
+            //this.Logger = new LogAnalyticsLogger();
 
             // Generate a new GUID as an ActivityId for this specific execution of Change Feed
             this.GuidForLogAnalytics = Guid.NewGuid();
@@ -237,6 +243,13 @@ namespace Microsoft.CosmosDB.PITRWithRestore.Restore
                 {
                     this.StartTimeForRestore = DateTime.ParseExact(startTimeForRestoreAsString, "yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture);
                 }
+
+                this.Logger.WriteMessage(
+                    string.Format(
+                        "ActivityId: {0} - Start time for restore is: {1}",
+                        this.GuidForLogAnalytics.ToString(),
+                        this.StartTimeForRestore.ToString("yyyy-MM-dd HH:mm:ss")));
+
             }
             catch (ArgumentNullException ex)
             {
@@ -258,6 +271,12 @@ namespace Microsoft.CosmosDB.PITRWithRestore.Restore
                 string endTimeForRestoreAsString = ConfigurationManager.AppSettings["endTimeForRestore"];
 
                 this.EndTimeForRestore = DateTime.ParseExact(endTimeForRestoreAsString, "yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture);
+
+                this.Logger.WriteMessage(
+                    string.Format(
+                        "ActivityId: {0} - End time for restore is: {1}",
+                        this.GuidForLogAnalytics.ToString(),
+                        this.EndTimeForRestore.ToString("yyyy-MM-dd HH:mm:ss")));
             }
             catch (ArgumentNullException ex)
             {
@@ -422,16 +441,19 @@ namespace Microsoft.CosmosDB.PITRWithRestore.Restore
         {
             this.ContainersToRestore = BlobStorageHelper.GetListOfContainersInStorageAccount(this.CloudBlobClient);
             
-            // Degree of parallelism = (Number of Containers to be restored) / (Number of workers for the Restore Job)
-            int maxDegreeOfParallelism = this.ContainersToRestore.Count /int.Parse(ConfigurationManager.AppSettings["NumWorkersForRestore"]);
-
-            for (int eachContainerToRestoreInParallel = 0; eachContainerToRestoreInParallel < maxDegreeOfParallelism; eachContainerToRestoreInParallel++)
+            int numAttempts = 0;
+            while (this.NumberOfBlobContainerLeasesAcquired < this.ContainersToRestore.Count && 
+                   numAttempts < this.MaxRetriesOnDocumentClientExceptions)
             {
                 string containerToRestore = await this.GetNextContainerToRestore(this.ContainersToRestore);
                 if (!string.IsNullOrEmpty(containerToRestore))
                 {
                     this.ContainersToRestoreInParallel.Add(containerToRestore);
                     this.ContainerToDocCountRestoredMapper[containerToRestore] = 0;
+                }
+                else
+                {
+                    numAttempts++;
                 }
             }
 
@@ -630,6 +652,18 @@ namespace Microsoft.CosmosDB.PITRWithRestore.Restore
                         if(upsertedDocument == null)
                         {
                             documentsFailedToRestore.Add(eachJObject);
+
+                            this.Logger.WriteMessage(
+                               string.Format(
+                                   "ActivityId - {0} - Document could not be restored.",
+                                   activityIdForBlobRestore));
+                        }
+                        else
+                        {
+                            this.Logger.WriteMessage(
+                               string.Format(
+                                   "ActivityId - {0} - Document was restored since it was in the restore time window.",
+                                   activityIdForBlobRestore));
                         }
                     }
                     catch (Exception e)
@@ -644,10 +678,15 @@ namespace Microsoft.CosmosDB.PITRWithRestore.Restore
                 }
                 else
                 {
+                    DateTime timestampInDocument = epoch.AddSeconds((long)eachJObject["_ts"]);
+
                     this.Logger.WriteMessage(
                            string.Format(
-                               "ActivityId - {0} - Document is not in restore window. Skipping...",
-                               activityIdForBlobRestore));
+                               "ActivityId - {0} - Document is not in restore window. Timestamp for document is {1}. Restore start time = {2} and Restore end time = {3}",
+                               activityIdForBlobRestore,
+                               timestampInDocument.ToString("yyyyMMdd HH: mm:ss"),
+                               this.StartTimeForRestore.ToString("yyyyMMdd HH: mm:ss"),
+                               this.EndTimeForRestore.ToString("yyyyMMdd HH: mm:ss")));
                 }
             }
 
@@ -664,8 +703,14 @@ namespace Microsoft.CosmosDB.PITRWithRestore.Restore
             bool isDocumentInRestoreWindow = false;
 
             // Convert the _ts property of the document to restore, to a timestamp
-            DateTime timestampInDocument = new DateTime(1970, 1, 1).AddSeconds(long.Parse(jObject["_ts"].ToString()));
-            if(DateTime.Compare(timestampInDocument, this.StartTimeForRestore) >= 0 && DateTime.Compare(timestampInDocument, this.EndTimeForRestore) <= 0)
+            DateTime timestampInDocument = epoch.AddSeconds((long)jObject["_ts"]);
+
+            //Console.WriteLine("123. Timestamp in document is: {0} and timestamp extracted is: {1}", 
+            //    (long)jObject["_ts"], 
+            //    timestampInDocument.ToString("yyyyMMdd HH:mm:ss"));
+
+            //DateTime timestampInDocument = new DateTime(1970, 1, 1).AddSeconds(long.Parse(jObject["_ts"].ToString()));
+            if (DateTime.Compare(timestampInDocument, this.StartTimeForRestore) >= 0 && DateTime.Compare(timestampInDocument, this.EndTimeForRestore) <= 0)
             {
                 isDocumentInRestoreWindow = true;
             }
@@ -748,14 +793,27 @@ namespace Microsoft.CosmosDB.PITRWithRestore.Restore
                 string endTimeForDocumentsInFile = blobNameComponents[1];
                 DateTime endTimeInBlobFile = DateTime.ParseExact(endTimeForDocumentsInFile, "yyyyMMddTHH:mm:ss", CultureInfo.InvariantCulture);
 
+                this.Logger.WriteMessage(string.Format(
+                    "Start time for restore is: {0} and start time in blob file is: {1}",
+                    this.StartTimeForRestore.ToString("yyyyMMddTHH:mm:ss"),
+                    startTimeInBlobFile));
+
                 // Determine the Blob Files to use for the Restore, as specified by the Start and End times for the Restore operation
                 if (DateTime.Compare(StartTimeForRestore, startTimeInBlobFile) >= 0 && DateTime.Compare(StartTimeForRestore, endTimeInBlobFile) <= 0)
                 {
                     blobsToRestore.Add(blobName);
+
+                    this.Logger.WriteMessage(string.Format(
+                        "Added blob file {0} because Restore Start time is between Start and end time of blob file",
+                        blobName));
                 }
                 else if (DateTime.Compare(StartTimeForRestore, startTimeInBlobFile) <= 0 && DateTime.Compare(EndTimeForRestore, startTimeInBlobFile) >= 0)
                 {
                     blobsToRestore.Add(blobName);
+
+                    this.Logger.WriteMessage(string.Format(
+                        "Added blob file {0} because end time for restore is after the start time in the blob file",
+                        blobName));
                 }
             }
 
@@ -804,12 +862,12 @@ namespace Microsoft.CosmosDB.PITRWithRestore.Restore
             long numberOfContainersToRestore = shuffledContainerNames.Count;
 
             // Number of containers in the Blob Storage account with leases acquired
-            long numberOfDocumentsInBlobStorageLeaseCollection = await this.GetDocumentCountInBlobStorageLeaseCollection();
+            this.NumberOfBlobContainerLeasesAcquired = await this.GetDocumentCountInBlobStorageLeaseCollection();
 
             do
             {
                 // If leases have been acquired for all containers in the Blob Storage account, there are no more containers to process for restore
-                if (numberOfDocumentsInBlobStorageLeaseCollection < numberOfContainersToRestore)
+                if (this.NumberOfBlobContainerLeasesAcquired < numberOfContainersToRestore)
                 {
                     string restoreDatabaseName = ConfigurationManager.AppSettings["RestoreHelperDatabaseName"];
                     string restoreHelperCollectionName = ConfigurationManager.AppSettings["RestoreHelperCollectionName"];
@@ -867,7 +925,7 @@ namespace Microsoft.CosmosDB.PITRWithRestore.Restore
                     }
 
                     // Refresh count of leases which have been picked up for the Blob Storage containers to restore
-                    numberOfDocumentsInBlobStorageLeaseCollection = await this.GetDocumentCountInBlobStorageLeaseCollection();
+                    this.NumberOfBlobContainerLeasesAcquired = await this.GetDocumentCountInBlobStorageLeaseCollection();
 
                     numRetries++;
                 }

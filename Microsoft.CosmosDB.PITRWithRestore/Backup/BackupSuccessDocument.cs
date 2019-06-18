@@ -23,9 +23,15 @@ namespace Microsoft.CosmosDB.PITRWithRestore.Backup
         public string Id { get; set; }
 
         /// <summary>
-        /// 
+        /// Count of successfully backed up documents for this physical shard of the source container
         /// </summary>
         [JsonProperty(PropertyName = "documentCount")]
         public int DocumentCount { get; set; }
+
+        /// <summary>
+        /// Max timestamp of documents backed up for this shard of the source container
+        /// </summary>
+        [JsonProperty(PropertyName = "maxTimestampOfBackedUpDocuments")]
+        public string MaxTimestampOfBackedUpDocments { get; set; }
     }
 }
