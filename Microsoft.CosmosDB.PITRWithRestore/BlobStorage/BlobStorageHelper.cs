@@ -3,6 +3,7 @@ namespace Microsoft.CosmosDB.PITRWithRestore.BlobStorage
 {
     using System;
     using System.Collections.Generic;
+    using System.Configuration;
     using System.Threading;
     
     using Microsoft.WindowsAzure.Storage;
@@ -25,7 +26,6 @@ namespace Microsoft.CosmosDB.PITRWithRestore.BlobStorage
             {
                 blockBlob.UploadText(uncompressedJsonDocuments);
                 writeToBlobSucceeded = true;
-                Console.WriteLine("Successfully wrote blob to Storage Account");
             }
             catch (StorageException ex)
             {
@@ -150,13 +150,26 @@ namespace Microsoft.CosmosDB.PITRWithRestore.BlobStorage
         /// <returns></returns>
         public static List<string> GetListOfContainersInStorageAccount(CloudBlobClient cloudBlobClient)
         {
+            string backupContainersToRestoreString = ConfigurationManager.AppSettings["BackupContainersToRestore"];
+            string sourceCollectionName = ConfigurationManager.AppSettings["CollectionName"];
             List<string> containerNames = new List<string>();
-            foreach (CloudBlobContainer eachContainer in cloudBlobClient.ListContainers())
+
+            if (!string.IsNullOrEmpty(backupContainersToRestoreString))
             {
-                if (eachContainer.Name.StartsWith("backup"))
+                string[] backupContainersToRestore = backupContainersToRestoreString.Split(',');
+                foreach(string eachBackupContainerToRestore in backupContainersToRestore)
                 {
-                    //Console.WriteLine("Found backup container: {0}", eachContainer.Name);
-                    containerNames.Add(eachContainer.Name);
+                    containerNames.Add(eachBackupContainerToRestore);
+                }
+            }
+            else
+            {
+                foreach (CloudBlobContainer eachContainer in cloudBlobClient.ListContainers())
+                {
+                    if (eachContainer.Name.StartsWith(string.Concat(sourceCollectionName.ToLower().Replace("_", "-"), "-backup")))
+                    {
+                        containerNames.Add(eachContainer.Name);
+                    }
                 }
             }
 

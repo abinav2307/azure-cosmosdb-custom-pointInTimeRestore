@@ -32,7 +32,14 @@ namespace Microsoft.CosmosDB.PITRWithRestore.Backup
         {
             this.DocumentClient = client;
             this.HostName = hostName;
-            this.Logger = new LogAnalyticsLogger();
+            if (bool.Parse(ConfigurationManager.AppSettings["PushLogsToLogAnalytics"]))
+            {
+                this.Logger = new LogAnalyticsLogger();
+            }
+            else
+            {
+                this.Logger = new ConsoleLogger();
+            }
         }
 
         /// <summary>

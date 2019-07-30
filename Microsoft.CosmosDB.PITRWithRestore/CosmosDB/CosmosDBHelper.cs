@@ -256,25 +256,28 @@ namespace Microsoft.CosmosDB.PITRWithRestore.CosmosDB
         /// <param name="document">Document to upsert</param>
         /// <param name="maxRetriesOnDocumentClientExceptions">Maximum number of retries when rate limited</param>
         /// <returns></returns>
-        public static async Task<ResourceResponse<Document>> UpsertDocumentAsync(
-            DocumentClient client, 
-            string databaseName, 
-            string collectionName, 
+        public static async Task<bool> UpsertDocumentAsync(
+            DocumentClient client,
+            string documentsFeedLink, 
             object document, 
             int maxRetriesOnDocumentClientExceptions,
             string activityId,
-            ILogger logger)
+            ILogger logger,
+            Exception exToLog = null,
+            RequestOptions requestOptions = null)
         {
             int numRetries = 0;
-            Uri documentsFeedLink = UriFactory.CreateDocumentCollectionUri(databaseName, collectionName);
-
-            ResourceResponse<Document> upsertedDocument = null;
+            
+            bool isUpsertSuccessful = false;
             try
             {
-                upsertedDocument = await client.UpsertDocumentAsync(documentsFeedLink, document, null, true);
+                await client.UpsertDocumentAsync(documentsFeedLink, document, null, true);
+                isUpsertSuccessful = true;
             }
             catch (DocumentClientException ex)
             {
+                exToLog = ex;
+
                 // Retry when rate limited for as many times as specified
                 if ((int)ex.StatusCode == 429)
                 {
@@ -291,12 +294,15 @@ namespace Microsoft.CosmosDB.PITRWithRestore.CosmosDB
 
                         try
                         {
-                            upsertedDocument = await client.UpsertDocumentAsync(documentsFeedLink, document, null, true);
+                            await client.UpsertDocumentAsync(documentsFeedLink, document, null, true);
                             success = true;
+                            isUpsertSuccessful = true;
                         }
                         catch (DocumentClientException e)
                         {
-                            if((int)e.StatusCode == 429)
+                            exToLog = e;
+
+                            if ((int)e.StatusCode == 429)
                             {
                                 logger.WriteMessage(string.Format("{0} - Still rate limited when attempting to upsert document. Retrying", activityId));
                                 sleepTime = (int)e.RetryAfter.TotalMilliseconds * 2;
@@ -306,14 +312,23 @@ namespace Microsoft.CosmosDB.PITRWithRestore.CosmosDB
                         }
                         catch (Exception exception)
                         {
+                            exToLog = exception;
                             logger.WriteMessage(string.Format("{0} - Caught Exception when retrying to upsert document. Exception was: {1}", activityId, exception.Message));
                             numRetries++;
                         }
                     }
                 }
+                else
+                {
+                    logger.WriteMessage(string.Format("{0} - Caught Exception when retrying to upsert document. Exception was: {1}. Status code was: {2}", activityId, ex.Message, (int)ex.StatusCode));
+                }
+            }
+            catch (Exception e)
+            {
+                exToLog = e;
             }
 
-            return upsertedDocument;
+            return isUpsertSuccessful;
         }
 
         /// <summary>
