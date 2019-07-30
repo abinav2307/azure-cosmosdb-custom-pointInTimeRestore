@@ -3,11 +3,12 @@ namespace Microsoft.CosmosDB.PITRWithRestore.BlobStorage
 {
     using System;
     using System.Collections.Generic;
+    using System.Configuration;
     using System.Threading;
-    
+
     using Microsoft.WindowsAzure.Storage;
     using Microsoft.WindowsAzure.Storage.Blob;
-    
+
     public class BlobStorageHelper
     {
         /// <summary>
@@ -25,7 +26,6 @@ namespace Microsoft.CosmosDB.PITRWithRestore.BlobStorage
             {
                 blockBlob.UploadText(uncompressedJsonDocuments);
                 writeToBlobSucceeded = true;
-                Console.WriteLine("Successfully wrote blob to Storage Account");
             }
             catch (StorageException ex)
             {
@@ -102,7 +102,7 @@ namespace Microsoft.CosmosDB.PITRWithRestore.BlobStorage
                 {
                     int retryWaitTime = 1;
                     int retryCount = 1;
-                    
+
                     // Custom exponential backoff-retry logic when rate limited by Azure Blob Storage
                     while (!writeToBlobSucceeded && retryCount <= maxRetriesOnRateLimitedWritesToBlobAccount)
                     {
@@ -136,7 +136,7 @@ namespace Microsoft.CosmosDB.PITRWithRestore.BlobStorage
                     throw ex;
                 }
 
-                if(!writeToBlobSucceeded)
+                if (!writeToBlobSucceeded)
                 {
                     throw ex;
                 }
@@ -150,13 +150,26 @@ namespace Microsoft.CosmosDB.PITRWithRestore.BlobStorage
         /// <returns></returns>
         public static List<string> GetListOfContainersInStorageAccount(CloudBlobClient cloudBlobClient)
         {
+            string backupContainersToRestoreString = ConfigurationManager.AppSettings["BackupContainersToRestore"];
+            string sourceCollectionName = ConfigurationManager.AppSettings["ContainerName"];
             List<string> containerNames = new List<string>();
-            foreach (CloudBlobContainer eachContainer in cloudBlobClient.ListContainers())
+
+            if (!string.IsNullOrEmpty(backupContainersToRestoreString))
             {
-                if (eachContainer.Name.StartsWith("backup"))
+                string[] backupContainersToRestore = backupContainersToRestoreString.Split(',');
+                foreach (string eachBackupContainerToRestore in backupContainersToRestore)
                 {
-                    //Console.WriteLine("Found backup container: {0}", eachContainer.Name);
-                    containerNames.Add(eachContainer.Name);
+                    containerNames.Add(eachBackupContainerToRestore);
+                }
+            }
+            else
+            {
+                foreach (CloudBlobContainer eachContainer in cloudBlobClient.ListContainers())
+                {
+                    if (eachContainer.Name.StartsWith(string.Concat(sourceCollectionName.ToLower().Replace("_", "-"), "-backup")))
+                    {
+                        containerNames.Add(eachContainer.Name);
+                    }
                 }
             }
 
@@ -182,7 +195,7 @@ namespace Microsoft.CosmosDB.PITRWithRestore.BlobStorage
                     {
                         string blobName = ((CloudBlockBlob)blobItem).Name;
                         string[] blobNameComponents = blobName.Split('-');
-                        
+
                         numDocumentsBackedUpInBlobStorageAccount += int.Parse(blobNameComponents[2]);
                     }
                 }

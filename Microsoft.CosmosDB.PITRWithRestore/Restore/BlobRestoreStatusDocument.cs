@@ -2,6 +2,7 @@
 namespace Microsoft.CosmosDB.PITRWithRestore.Restore
 {
     using Newtonsoft.Json;
+    using Newtonsoft.Json.Linq;
 
     internal sealed class BlobRestoreStatusDocument
     {
@@ -24,15 +25,39 @@ namespace Microsoft.CosmosDB.PITRWithRestore.Restore
         public string BlobName { get; set; }
 
         /// <summary>
-        /// 
+        /// DocumentType specifying if the document is a Restore Success, Failure or Helper document
         /// </summary>
-        [JsonProperty(PropertyName = "status")]
-        public string Status { get; set; }
+        [JsonProperty(PropertyName = "documentType")]
+        public string DocumentType { get; set; }
 
         /// <summary>
         /// Number of documents restored for the container
         /// </summary>
         [JsonProperty(PropertyName = "documentCount")]
         public long DocumentCount { get; set; }
+
+        /// <summary>
+        /// The exception message for the failure
+        /// </summary>
+        [JsonProperty(PropertyName = "exceptionMessage")]
+        public string ExceptionMessage { get; set; }
+
+        /// <summary>
+        /// The exception type
+        /// </summary>
+        [JsonProperty(PropertyName = "exceptionType")]
+        public string ExceptionType { get; set; }
+
+        /// <summary>
+        /// The exception type
+        /// </summary>
+        [JsonProperty(PropertyName = "innerExceptionMessage")]
+        public string InnerExceptionMessage { get; set; }
+
+        /// <summary>
+        /// The exception type
+        /// </summary>
+        [JsonProperty(PropertyName = "documentFailedToRestore")]
+        public JObject DocumentFailedToRestore { get; set; }
     }
 }

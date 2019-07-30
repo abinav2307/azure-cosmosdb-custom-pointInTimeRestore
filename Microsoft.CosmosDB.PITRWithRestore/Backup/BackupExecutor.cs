@@ -32,7 +32,14 @@ namespace Microsoft.CosmosDB.PITRWithRestore.Backup
         {
             this.DocumentClient = client;
             this.HostName = hostName;
-            this.Logger = new LogAnalyticsLogger();
+            if (bool.Parse(ConfigurationManager.AppSettings["PushLogsToLogAnalytics"]))
+            {
+                this.Logger = new LogAnalyticsLogger();
+            }
+            else
+            {
+                this.Logger = new ConsoleLogger();
+            }
         }
 
         /// <summary>
@@ -43,12 +50,12 @@ namespace Microsoft.CosmosDB.PITRWithRestore.Backup
         /// <returns>A Task to allow asynchronous execution</returns>
         public async Task ExecuteBackup()
         {
-            string leaseDbName = ConfigurationManager.AppSettings["leaseDbName"];
-            string leaseCollectionName = ConfigurationManager.AppSettings["leaseCollectionName"];
-            int leaseThroughput = int.Parse(ConfigurationManager.AppSettings["leaseThroughput"]);
-            string leaseCollectionPartitionKey = ConfigurationManager.AppSettings["leaseCollectionPartitionKey"];
+            string leaseDbName = ConfigurationManager.AppSettings["LeaseDbName"];
+            string leaseContainerName = ConfigurationManager.AppSettings["LeaseContainerName"];
+            int leaseThroughput = int.Parse(ConfigurationManager.AppSettings["LeaseThroughput"]);
+            string leaseContainerPartitionKey = ConfigurationManager.AppSettings["LeaseContainerPartitionKey"];
 
-            await CosmosDBHelper.CreateCollectionIfNotExistsAsync(this.DocumentClient, leaseDbName, leaseCollectionName, leaseThroughput, leaseCollectionPartitionKey, this.Logger);
+            await CosmosDBHelper.CreateCollectionIfNotExistsAsync(this.DocumentClient, leaseDbName, leaseContainerName, leaseThroughput, leaseContainerPartitionKey, this.Logger);
 
             await this.RunChangeFeedHostAsync();
         }
@@ -64,29 +71,29 @@ namespace Microsoft.CosmosDB.PITRWithRestore.Backup
             string monitoredUri = ConfigurationManager.AppSettings["CosmosDBEndpointUri"];
             string monitoredSecretKey = ConfigurationManager.AppSettings["CosmosDBAuthKey"];
             string monitoredDbName = ConfigurationManager.AppSettings["DatabaseName"];
-            string monitoredCollectionName = ConfigurationManager.AppSettings["CollectionName"];
-            
+            string monitoredContainerName = ConfigurationManager.AppSettings["ContainerName"];
+
             // Source collection to be monitored for changes
             DocumentCollectionInfo documentCollectionInfo = new DocumentCollectionInfo
             {
                 Uri = new Uri(monitoredUri),
                 MasterKey = monitoredSecretKey,
                 DatabaseName = monitoredDbName,
-                CollectionName = monitoredCollectionName
+                CollectionName = monitoredContainerName
             };
 
-            string leaseUri = ConfigurationManager.AppSettings["leaseUri"];
-            string leaseSecretKey = ConfigurationManager.AppSettings["leaseSecretKey"];
-            string leaseDbName = ConfigurationManager.AppSettings["leaseDbName"];
-            string leaseCollectionName = ConfigurationManager.AppSettings["leaseCollectionName"];
-            
+            string leaseUri = ConfigurationManager.AppSettings["LeaseUri"];
+            string leaseSecretKey = ConfigurationManager.AppSettings["LeaseSecretKey"];
+            string leaseDbName = ConfigurationManager.AppSettings["LeaseDbName"];
+            string leaseContainerName = ConfigurationManager.AppSettings["LeaseContainerName"];
+
             // Lease Collection managing leases on each of the underlying shards of the source collection being monitored
-            DocumentCollectionInfo leaseCollectionInfo = new DocumentCollectionInfo
+            DocumentCollectionInfo leaseContainerInfo = new DocumentCollectionInfo
             {
                 Uri = new Uri(leaseUri),
                 MasterKey = leaseSecretKey,
                 DatabaseName = leaseDbName,
-                CollectionName = leaseCollectionName
+                CollectionName = leaseContainerName
             };
 
             DocumentFeedObserverFactory docObserverFactory = new DocumentFeedObserverFactory(this.DocumentClient);
@@ -103,7 +110,7 @@ namespace Microsoft.CosmosDB.PITRWithRestore.Backup
             builder
                 .WithHostName(this.HostName)
                 .WithFeedCollection(documentCollectionInfo)
-                .WithLeaseCollection(leaseCollectionInfo)
+                .WithLeaseCollection(leaseContainerInfo)
                 .WithProcessorOptions(feedProcessorOptions)
                 .WithObserverFactory(new DocumentFeedObserverFactory(this.DocumentClient));
 

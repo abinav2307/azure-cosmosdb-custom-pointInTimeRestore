@@ -61,13 +61,26 @@ namespace Microsoft.CosmosDB.PITRWithRestore
         private bool UseCompression;
 
         /// <summary>
+        /// Name of the container being backed up to the specified blob storage account
+        /// </summary>
+        private string SourceContainerName;
+
+        /// <summary>
         /// Initializes a new instance of the <see cref="DocumentFeedObserver" /> class.
         /// </summary>
         public DocumentFeedObserver(CloudBlobClient cloudBlobClient, DocumentClient client)
         {
             this.CloudBlobClient = cloudBlobClient;
             this.DocumentClient = client;
-            this.Logger = new LogAnalyticsLogger();
+            this.SourceContainerName = ConfigurationManager.AppSettings["ContainerName"];
+            if (bool.Parse(ConfigurationManager.AppSettings["PushLogsToLogAnalytics"]))
+            {
+                this.Logger = new LogAnalyticsLogger();
+            }
+            else
+            {
+                this.Logger = new ConsoleLogger();
+            }
             this.UseCompression = bool.Parse(ConfigurationManager.AppSettings["UseCompression"]);
         }
 
@@ -132,7 +145,7 @@ namespace Microsoft.CosmosDB.PITRWithRestore
 
             string textToBackup = jArrayOfChangedDocs.ToString();
 
-            string containerName = string.Concat("backup-", partitionId);
+            string containerName = string.Concat(this.SourceContainerName.ToLower().Replace("_", "-"), "-backup-", partitionId);
 
             CloudBlobContainer cloudBlobContainer = this.CloudBlobClient.GetContainerReference(containerName);
             cloudBlobContainer.CreateIfNotExists();
@@ -147,13 +160,14 @@ namespace Microsoft.CosmosDB.PITRWithRestore
 
                     BlobStorageHelper.WriteStringToBlobStorage(blockBlob, textToBackup, this.MaxRetriesOnRateLimitedWritesToBlobAccount);
 
-                    this.Logger.WriteMessage(string.Format("ActivityId: {0} - Successfully wrote compressed data to blob storage with file name: {1}", this.GuidForLogAnalytics.ToString(), fileName));
+                    this.Logger.WriteMessage(string.Format("Sev 3: ActivityId: {0} - Successfully wrote data to blob storage with file name: {1}", this.GuidForLogAnalytics.ToString(), fileName));
 
                     this.TrackSuccessfulBatchesOfBackups(containerName, jArrayOfChangedDocs.Count, maxTimeStamp);
                 }
                 catch (Exception ex)
                 {
-                    //this.TrackFailedBatchesOfBackups(containerName, fileName, docs.Count, compressedByteArray, ex);
+                    byte[] compressedByteArray = CompressDocumentsInJArray(jArrayOfChangedDocs);
+                    this.TrackFailedBatchesOfBackups(containerName, fileName, jArrayOfChangedDocs.Count, compressedByteArray, ex);
                 }
             }
             else
@@ -162,13 +176,14 @@ namespace Microsoft.CosmosDB.PITRWithRestore
                 {
                     BlobStorageHelper.WriteStringToBlobStorage(blockBlob, textToBackup, this.MaxRetriesOnRateLimitedWritesToBlobAccount);
 
-                    this.Logger.WriteMessage(string.Format("ActivityId: {0} - Successfully wrote uncompressed data to blob storage with file name: {1}", this.GuidForLogAnalytics.ToString(), fileName));
+                    this.Logger.WriteMessage(string.Format("Sev 3: ActivityId: {0} - Successfully wrote uncompressed data to blob storage with file name: {1}", this.GuidForLogAnalytics.ToString(), fileName));
 
                     this.TrackSuccessfulBatchesOfBackups(containerName, jArrayOfChangedDocs.Count, maxTimeStamp);
                 }
                 catch (Exception ex)
                 {
-                    //this.TrackFailedBatchesOfBackups(containerName, fileName, docs.Count, compressedByteArray, ex);
+                    byte[] compressedByteArray = CompressDocumentsInJArray(jArrayOfChangedDocs);
+                    this.TrackFailedBatchesOfBackups(containerName, fileName, jArrayOfChangedDocs.Count, compressedByteArray, ex);
                 }
             }
         }
@@ -228,14 +243,14 @@ namespace Microsoft.CosmosDB.PITRWithRestore
         /// efficient storage into Blob Storage</param>
         private void WriteCompressedDataToBlob(string partitionId, string fileName, int docCount, byte[] compressedByteArray, DateTime maxTimestampOfBackedUpDocuments)
         {
-            string containerName = string.Concat("backup-", partitionId);
+            string containerName = string.Concat(this.SourceContainerName.ToLower().Replace("_", "-"), "-backup-", partitionId);
 
             CloudBlobContainer cloudBlobContainer = this.CloudBlobClient.GetContainerReference(containerName);
 
             cloudBlobContainer.CreateIfNotExists();
 
             CloudBlockBlob blockBlob = cloudBlobContainer.GetBlockBlobReference(fileName);
-            if(blockBlob.Exists())
+            if (blockBlob.Exists())
             {
                 if (!VerifyIfBlobPreviouslyBackedUp(blockBlob, compressedByteArray))
                 {
@@ -246,7 +261,7 @@ namespace Microsoft.CosmosDB.PITRWithRestore
 
                         BlobStorageHelper.WriteToBlobStorage(blockBlob, compressedByteArray, this.MaxRetriesOnRateLimitedWritesToBlobAccount);
 
-                        this.Logger.WriteMessage(string.Format("ActivityId: {0} - Successfully wrote compressed data to blob storage with file name: {1}", this.GuidForLogAnalytics.ToString(), fileName));
+                        this.Logger.WriteMessage(string.Format("Sev 3: ActivityId: {0} - Successfully wrote compressed data to blob storage with file name: {1}", this.GuidForLogAnalytics.ToString(), fileName));
 
                         this.TrackSuccessfulBatchesOfBackups(containerName, docCount, maxTimestampOfBackedUpDocuments);
                     }
@@ -266,7 +281,7 @@ namespace Microsoft.CosmosDB.PITRWithRestore
                 {
                     BlobStorageHelper.WriteToBlobStorage(blockBlob, compressedByteArray, this.MaxRetriesOnRateLimitedWritesToBlobAccount);
 
-                    this.Logger.WriteMessage(string.Format("ActivityId: {0} - Successfully wrote compressed data to blob storage with file name: {1}", this.GuidForLogAnalytics.ToString(), fileName));
+                    this.Logger.WriteMessage(string.Format("Sev 3: ActivityId: {0} - Successfully wrote compressed data to blob storage with file name: {1}", this.GuidForLogAnalytics.ToString(), fileName));
 
                     this.TrackSuccessfulBatchesOfBackups(containerName, docCount, maxTimestampOfBackedUpDocuments);
                 }
@@ -304,45 +319,46 @@ namespace Microsoft.CosmosDB.PITRWithRestore
         /// <param name="maxTimestampOfBackedUpDocuments">Max timestamp of documents backed up in this shard for the source container</param>
         private void TrackSuccessfulBatchesOfBackups(string containerName, int docCount, DateTime maxTimestampOfBackedUpDocuments)
         {
-            string backupSuccessDatabaseName = ConfigurationManager.AppSettings["BackupSuccessDatabaseName"];
-            string backupSuccessCollectionName = ConfigurationManager.AppSettings["BackupSuccessCollectionName"];
-            Uri documentsFeedLink = UriFactory.CreateDocumentCollectionUri(backupSuccessDatabaseName, backupSuccessCollectionName);
+            string backupStatusDatabaseName = ConfigurationManager.AppSettings["BackupStatusDatabaseName"];
+            string backupStatusContainerName = ConfigurationManager.AppSettings["BackupStatusContainerName"];
+            Uri documentsFeedLink = UriFactory.CreateDocumentCollectionUri(backupStatusDatabaseName, backupStatusContainerName);
 
             BackupSuccessDocument backupSuccessDocument = new BackupSuccessDocument();
             backupSuccessDocument.ContainerName = containerName;
             backupSuccessDocument.Id = containerName;
-            backupSuccessDocument.MaxTimestampOfBackedUpDocments = 
+            backupSuccessDocument.MaxTimestampOfBackedUpDocments =
                 maxTimestampOfBackedUpDocuments.ToUniversalTime().ToString("MM/dd/yyyy HH:mm:ss");
+            backupSuccessDocument.DocumentType = "Success";
 
             ResourceResponse<Document> document = CosmosDBHelper.ReadDocmentAsync(
-                this.DocumentClient, 
-                backupSuccessDatabaseName,
-                backupSuccessCollectionName, 
-                containerName, 
+                this.DocumentClient,
+                backupStatusDatabaseName,
+                backupStatusContainerName,
+                containerName,
                 containerName,
                 this.MaxRetriesOnRateLimitedWritesToBlobAccount,
                 this.GuidForLogAnalytics.ToString(),
                 this.Logger).Result;
 
-            if(document == null)
+            if (document == null)
             {
                 backupSuccessDocument.DocumentCount = docCount;
 
                 document = CosmosDBHelper.CreateDocumentAsync(
-                    this.DocumentClient, 
-                    backupSuccessDatabaseName, 
-                    backupSuccessCollectionName, 
-                    backupSuccessDocument, 
+                    this.DocumentClient,
+                    backupStatusDatabaseName,
+                    backupStatusContainerName,
+                    backupSuccessDocument,
                     this.MaxRetriesOnRateLimitedWritesToBlobAccount,
                 this.GuidForLogAnalytics.ToString(),
                 this.Logger).Result;
 
                 this.Logger.WriteMessage(
                     string.Format(
-                        "ActivityId: {0} - {1} - Updated successful backup to container : {2} to {3}", 
-                        this.GuidForLogAnalytics.ToString(), 
-                        backupSuccessCollectionName, 
-                        containerName, 
+                        "Sev 3: ActivityId: {0} - {1} - Updated successful backup to container : {2} to {3}",
+                        this.GuidForLogAnalytics.ToString(),
+                        backupStatusContainerName,
+                        containerName,
                         backupSuccessDocument.DocumentCount));
             }
             else
@@ -360,8 +376,8 @@ namespace Microsoft.CosmosDB.PITRWithRestore
 
                     document = CosmosDBHelper.ReplaceDocumentAsync(
                         this.DocumentClient,
-                        backupSuccessDatabaseName,
-                        backupSuccessCollectionName,
+                        backupStatusDatabaseName,
+                        backupStatusContainerName,
                         containerName,
                         backupSuccessDocument,
                         requestOptions,
@@ -375,8 +391,8 @@ namespace Microsoft.CosmosDB.PITRWithRestore
                     {
                         document = CosmosDBHelper.ReadDocmentAsync(
                             this.DocumentClient,
-                            backupSuccessDatabaseName,
-                            backupSuccessCollectionName,
+                            backupStatusDatabaseName,
+                            backupStatusContainerName,
                             containerName,
                             containerName,
                             this.MaxRetriesOnRateLimitedWritesToBlobAccount,
@@ -385,9 +401,9 @@ namespace Microsoft.CosmosDB.PITRWithRestore
 
                         this.Logger.WriteMessage(
                             string.Format(
-                                "ActivityId: {0} - {1} - Retrying update of successful backup to container : {2} to {3} due to ETag mismatch on the server",
+                                "Sev 2: ActivityId: {0} - {1} - Retrying update of successful backup to container : {2} to {3} due to ETag mismatch on the server",
                                 this.GuidForLogAnalytics.ToString(),
-                                backupSuccessCollectionName,
+                                backupStatusContainerName,
                                 containerName,
                                 backupSuccessDocument.DocumentCount));
                     }
@@ -397,13 +413,13 @@ namespace Microsoft.CosmosDB.PITRWithRestore
 
                         this.Logger.WriteMessage(
                             string.Format(
-                                "ActivityId: {0} - {1} - Updated successful backup to container : {2} to {3}",
+                                "Sev 3: ActivityId: {0} - {1} - Updated successful backup to container : {2} to {3}",
                                 this.GuidForLogAnalytics.ToString(),
-                                backupSuccessCollectionName,
+                                backupStatusContainerName,
                                 containerName,
                                 backupSuccessDocument.DocumentCount));
                     }
-                }                
+                }
             }
         }
 
@@ -418,10 +434,10 @@ namespace Microsoft.CosmosDB.PITRWithRestore
         /// <param name="ex">Exception which caused this backup to not be persisted in the specified blob storage account</param>
         private void TrackFailedBatchesOfBackups(string containerName, string fileName, int docCountInBackup, byte[] docs, Exception ex)
         {
-            string backupFailureDatabaseName = ConfigurationManager.AppSettings["BackupFailureDatabaseName"];
-            string backupFailureCollectionName = ConfigurationManager.AppSettings["BackupFailureCollectionName"];
-            
-            Uri documentsFeedLink = UriFactory.CreateDocumentCollectionUri(backupFailureDatabaseName, backupFailureCollectionName);
+            string backupStatusDatabaseName = ConfigurationManager.AppSettings["BackupStatusDatabaseName"];
+            string backupStatusContainerName = ConfigurationManager.AppSettings["BackupStatusContainerName"];
+
+            Uri documentsFeedLink = UriFactory.CreateDocumentCollectionUri(backupStatusDatabaseName, backupStatusContainerName);
 
             // Convert the Gzip compressed byte array into a string, to persist in the BackupFailureCollection
             StringBuilder sB = new System.Text.StringBuilder(docs.Length);
@@ -433,6 +449,7 @@ namespace Microsoft.CosmosDB.PITRWithRestore
             BackupFailureDocument backupFailureDocument = new BackupFailureDocument();
             backupFailureDocument.ContainerName = containerName;
             backupFailureDocument.Id = fileName;
+            backupFailureDocument.DocumentType = "Failure";
             backupFailureDocument.CompressedByteArray = sB.ToString();
             backupFailureDocument.DocumentCountInCompressedBackup = docCountInBackup;
 
@@ -453,19 +470,19 @@ namespace Microsoft.CosmosDB.PITRWithRestore
             }
 
             CosmosDBHelper.CreateDocumentAsync(
-                this.DocumentClient, 
-                backupFailureDatabaseName, 
-                backupFailureCollectionName, 
-                backupFailureDocument, 
+                this.DocumentClient,
+                backupStatusDatabaseName,
+                backupStatusContainerName,
+                backupFailureDocument,
                 this.MaxRetriesOnRateLimitedWritesToBlobAccount,
                 this.GuidForLogAnalytics.ToString(),
                 this.Logger).Wait();
 
             this.Logger.WriteMessage(
                 string.Format(
-                    "ActivityId: {0} - {1} - Updated failed backup to container : {2} due to exception : {3}",
+                    "Sev 3: ActivityId: {0} - {1} - Updated failed backup to container : {2} due to exception : {3}",
                     this.GuidForLogAnalytics.ToString(),
-                    backupFailureCollectionName,
+                    backupStatusContainerName,
                     containerName,
                     backupFailureDocument.ToString));
         }
@@ -509,7 +526,7 @@ namespace Microsoft.CosmosDB.PITRWithRestore
             {
                 JObject eachDocumentAsJObject = JObject.Parse(doc.ToString());
                 jArrayOfChangedDocs.Add(eachDocumentAsJObject);
-                
+
                 if (DateTime.Compare(maxTimeStamp, doc.Timestamp) < 0)
                 {
                     maxTimeStamp = doc.Timestamp;
@@ -534,7 +551,7 @@ namespace Microsoft.CosmosDB.PITRWithRestore
                         jArrayOfChangedDocs.Count);
 
                     this.Logger.WriteMessage(
-                        string.Format("ActivityId: {0} - Created compressed backups with file name: {1} with doc count = {2}",
+                        string.Format("Sev 3: ActivityId: {0} - Created compressed backups with file name: {1} with doc count = {2}",
                             this.GuidForLogAnalytics.ToString(),
                             fileName,
                             jArrayOfChangedDocs.Count));
@@ -565,7 +582,7 @@ namespace Microsoft.CosmosDB.PITRWithRestore
                     jArrayOfChangedDocs.Count);
 
                 this.Logger.WriteMessage(
-                    string.Format("ActivityId: {0} - Created compressed backups with file name: {1} with doc count = {2}",
+                    string.Format("Sev 3: ActivityId: {0} - Created compressed backups with file name: {1} with doc count = {2}",
                         this.GuidForLogAnalytics.ToString(),
                         fileName,
                         jArrayOfChangedDocs.Count));
@@ -575,6 +592,6 @@ namespace Microsoft.CosmosDB.PITRWithRestore
                 // Filename is the timestamp at which the data should be written
                 this.WriteCompressedDataToBlob(partitionKeyRangeId, fileName, jArrayOfChangedDocs.Count, bytes, maxTimeStamp);
             }
-        }    
+        }
     }
 }

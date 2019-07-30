@@ -3,7 +3,7 @@ namespace Microsoft.CosmosDB.PITRWithRestore
 {
     using System;
     using System.Configuration;
-    
+
     using Microsoft.Azure.Documents.Client;
     using Microsoft.Azure.Documents.ChangeFeedProcessor.FeedProcessing;
 
@@ -65,32 +65,18 @@ namespace Microsoft.CosmosDB.PITRWithRestore
                 Console.ReadLine();
             }
 
-            string backupFailureDatabaseName = ConfigurationManager.AppSettings["BackupFailureDatabaseName"];
-            string backupFailureCollectionName = ConfigurationManager.AppSettings["BackupFailureCollectionName"];
-            int backupFailureCollectionThroughput = int.Parse(ConfigurationManager.AppSettings["BackupFailureCollectionThroughput"]);
-            string backupFailureCollectionPartitionKey = ConfigurationManager.AppSettings["BackupFailureCollectionPartitionKey"];
+            string backupStatusDatabaseName = ConfigurationManager.AppSettings["BackupStatusDatabaseName"];
+            string backupStatusContainerName = ConfigurationManager.AppSettings["BackupStatusContainerName"];
+            int backupStatusContainerThroughput = int.Parse(ConfigurationManager.AppSettings["BackupStatusContainerThroughput"]);
+            string backupStatusContainerPartitionKey = ConfigurationManager.AppSettings["BackupStatusContainerPartitionKey"];
 
-            // Create collection to track backup failures
-            CosmosDBHelper.CreateCollectionIfNotExistsAsync(
-                this.DocumentClient, 
-                backupFailureDatabaseName, 
-                backupFailureCollectionName, 
-                backupFailureCollectionThroughput, 
-                backupFailureCollectionPartitionKey,
-                this.Logger).Wait();
-
-            string backupSuccessDatabaseName = ConfigurationManager.AppSettings["BackupSuccessDatabaseName"];
-            string backupSuccessCollectionName = ConfigurationManager.AppSettings["BackupSuccessCollectionName"];
-            int backupSuccessCollectionThroughput = int.Parse(ConfigurationManager.AppSettings["BackupSuccessCollectionThroughput"]);
-            string backupSuccessCollectionPartitionKey = ConfigurationManager.AppSettings["BackupSuccessCollectionPartitionKey"];
-
-            // Create collection to track backup failures
+            // Create container to track backup successes and failures
             CosmosDBHelper.CreateCollectionIfNotExistsAsync(
                 this.DocumentClient,
-                backupSuccessDatabaseName,
-                backupSuccessCollectionName,
-                backupSuccessCollectionThroughput,
-                backupSuccessCollectionPartitionKey,
+                backupStatusDatabaseName,
+                backupStatusContainerName,
+                backupStatusContainerThroughput,
+                backupStatusContainerPartitionKey,
                 this.Logger).Wait();
         }
 

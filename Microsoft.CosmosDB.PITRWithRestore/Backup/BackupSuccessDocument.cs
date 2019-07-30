@@ -23,6 +23,12 @@ namespace Microsoft.CosmosDB.PITRWithRestore.Backup
         public string Id { get; set; }
 
         /// <summary>
+        /// Type of document (needed since failures and successes will be tracked in the same Cosmos DB container)
+        /// </summary>
+        [JsonProperty(PropertyName = "documentType")]
+        public string DocumentType { get; set; }
+
+        /// <summary>
         /// Count of successfully backed up documents for this physical shard of the source container
         /// </summary>
         [JsonProperty(PropertyName = "documentCount")]

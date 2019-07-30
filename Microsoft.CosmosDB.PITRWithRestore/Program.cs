@@ -5,16 +5,16 @@
     using Microsoft.Azure.Documents.Client;
     using Microsoft.CosmosDB.PITRWithRestore.Backup;
     using Microsoft.CosmosDB.PITRWithRestore.Restore;
-    
+
     public class Program
     {
         public static void Main(string[] args)
         {
             string hostName = string.Concat("Host-", Guid.NewGuid().ToString());
 
-            if(string.IsNullOrEmpty(ConfigurationManager.AppSettings["ModeOfOperation"]))
+            if (string.IsNullOrEmpty(ConfigurationManager.AppSettings["ModeOfOperation"]))
             {
-                Console.WriteLine("Mode of operation [Backup/Restore] must be specified in configuration file. Please retry after setting mode of operation.");                
+                Console.WriteLine("Mode of operation [Backup/Restore] must be specified in configuration file. Please retry after setting mode of operation.");
             }
             else if (ConfigurationManager.AppSettings["ModeOfOperation"].Equals("Backup"))
             {
@@ -39,8 +39,8 @@
 
             Console.WriteLine("Completed!");
             Console.ReadLine();
-        }     
-        
+        }
+
         /// <summary>
         /// Creates an instance of the DocumentClient to interact with Azure Cosmos DB Service
         /// </summary>

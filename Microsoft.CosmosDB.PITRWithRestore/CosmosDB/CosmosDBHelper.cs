@@ -96,11 +96,11 @@ namespace Microsoft.CosmosDB.PITRWithRestore.CosmosDB
         /// <param name="maxRetriesOnDocumentClientExceptions">Maximum number of retries when rate limited</param>
         /// <returns></returns>
         public static async Task<ResourceResponse<Document>> ReadDocmentAsync(
-            DocumentClient client, 
-            string databaseName, 
-            string collectionName, 
-            string partitionKey, 
-            string id, 
+            DocumentClient client,
+            string databaseName,
+            string collectionName,
+            string partitionKey,
+            string id,
             int maxRetriesOnDocumentClientExceptions,
             string activityId,
             ILogger logger)
@@ -117,7 +117,7 @@ namespace Microsoft.CosmosDB.PITRWithRestore.CosmosDB
             }
             catch (DocumentClientException ex)
             {
-                if((int)ex.StatusCode == 404)
+                if ((int)ex.StatusCode == 404)
                 {
                     document = null;
                 }
@@ -256,25 +256,28 @@ namespace Microsoft.CosmosDB.PITRWithRestore.CosmosDB
         /// <param name="document">Document to upsert</param>
         /// <param name="maxRetriesOnDocumentClientExceptions">Maximum number of retries when rate limited</param>
         /// <returns></returns>
-        public static async Task<ResourceResponse<Document>> UpsertDocumentAsync(
-            DocumentClient client, 
-            string databaseName, 
-            string collectionName, 
-            object document, 
+        public static async Task<bool> UpsertDocumentAsync(
+            DocumentClient client,
+            string documentsFeedLink,
+            object document,
             int maxRetriesOnDocumentClientExceptions,
             string activityId,
-            ILogger logger)
+            ILogger logger,
+            Exception exToLog = null,
+            RequestOptions requestOptions = null)
         {
             int numRetries = 0;
-            Uri documentsFeedLink = UriFactory.CreateDocumentCollectionUri(databaseName, collectionName);
 
-            ResourceResponse<Document> upsertedDocument = null;
+            bool isUpsertSuccessful = false;
             try
             {
-                upsertedDocument = await client.UpsertDocumentAsync(documentsFeedLink, document, null, true);
+                await client.UpsertDocumentAsync(documentsFeedLink, document, null, true);
+                isUpsertSuccessful = true;
             }
             catch (DocumentClientException ex)
             {
+                exToLog = ex;
+
                 // Retry when rate limited for as many times as specified
                 if ((int)ex.StatusCode == 429)
                 {
@@ -291,29 +294,41 @@ namespace Microsoft.CosmosDB.PITRWithRestore.CosmosDB
 
                         try
                         {
-                            upsertedDocument = await client.UpsertDocumentAsync(documentsFeedLink, document, null, true);
+                            await client.UpsertDocumentAsync(documentsFeedLink, document, null, true);
                             success = true;
+                            isUpsertSuccessful = true;
                         }
                         catch (DocumentClientException e)
                         {
-                            if((int)e.StatusCode == 429)
+                            exToLog = e;
+
+                            if ((int)e.StatusCode == 429)
                             {
                                 logger.WriteMessage(string.Format("{0} - Still rate limited when attempting to upsert document. Retrying", activityId));
                                 sleepTime = (int)e.RetryAfter.TotalMilliseconds * 2;
                             }
-                            
+
                             numRetries++;
                         }
                         catch (Exception exception)
                         {
+                            exToLog = exception;
                             logger.WriteMessage(string.Format("{0} - Caught Exception when retrying to upsert document. Exception was: {1}", activityId, exception.Message));
                             numRetries++;
                         }
                     }
                 }
+                else
+                {
+                    logger.WriteMessage(string.Format("{0} - Caught Exception when retrying to upsert document. Exception was: {1}. Status code was: {2}", activityId, ex.Message, (int)ex.StatusCode));
+                }
+            }
+            catch (Exception e)
+            {
+                exToLog = e;
             }
 
-            return upsertedDocument;
+            return isUpsertSuccessful;
         }
 
         /// <summary>
@@ -350,8 +365,8 @@ namespace Microsoft.CosmosDB.PITRWithRestore.CosmosDB
                 {
                     logger.WriteMessage(
                         string.Format(
-                            "{0} - Received rate limiting exception when attempting to replace document with id: {1}. Retrying", 
-                            activityId, 
+                            "{0} - Received rate limiting exception when attempting to replace document with id: {1}. Retrying",
+                            activityId,
                             documentId));
 
                     // If the write is rate limited, wait for twice the recommended wait time specified in the exception
@@ -374,8 +389,8 @@ namespace Microsoft.CosmosDB.PITRWithRestore.CosmosDB
                             {
                                 logger.WriteMessage(
                                     string.Format(
-                                        "{0} - Still rate limited when attempting to replace document with id: {1}. Retrying", 
-                                        activityId, 
+                                        "{0} - Still rate limited when attempting to replace document with id: {1}. Retrying",
+                                        activityId,
                                         documentId));
 
                                 sleepTime = (int)e.RetryAfter.TotalMilliseconds * 2;
@@ -387,9 +402,9 @@ namespace Microsoft.CosmosDB.PITRWithRestore.CosmosDB
                         {
                             logger.WriteMessage(
                                 string.Format(
-                                    "{0} - Caught Exception when retrying to replace document with id: {1}. Exception was: {2}", 
-                                    activityId, 
-                                    documentId, 
+                                    "{0} - Caught Exception when retrying to replace document with id: {1}. Exception was: {2}",
+                                    activityId,
+                                    documentId,
                                     exception.Message));
 
                             numRetries++;
@@ -520,10 +535,10 @@ namespace Microsoft.CosmosDB.PITRWithRestore.CosmosDB
         /// <param name="partitionKey">Partition Key for the collection to be created</param>
         /// <returns>A Task to allow asynchronous execution</returns>
         public static async Task CreateCollectionIfNotExistsAsync(
-            DocumentClient client, 
-            string databaseName, 
-            string collectionName, 
-            int throughput, 
+            DocumentClient client,
+            string databaseName,
+            string collectionName,
+            int throughput,
             string partitionKey,
             ILogger logger,
             bool indexAllProperties = false,
@@ -549,9 +564,9 @@ namespace Microsoft.CosmosDB.PITRWithRestore.CosmosDB
                     else
                     {
                         await client.DeleteDocumentCollectionAsync(string.Format("/dbs/{0}/colls/{1}", databaseName, collectionName));
-                        
+
                         IndexingPolicy policy = new IndexingPolicy();
-                        if(!indexAllProperties)
+                        if (!indexAllProperties)
                         {
                             policy.Automatic = false;
                             policy.IndexingMode = IndexingMode.None;
@@ -592,9 +607,9 @@ namespace Microsoft.CosmosDB.PITRWithRestore.CosmosDB
                     catch (Exception ex)
                     {
                         logger.WriteMessage(string.Format(
-                            "Exception thrown when attempting to create the collection {0} in database: {1}: with message: {2}", 
-                            collectionName, 
-                            databaseName, 
+                            "Exception thrown when attempting to create the collection {0} in database: {1}: with message: {2}",
+                            collectionName,
+                            databaseName,
                             ex.Message));
                     }
                 }
