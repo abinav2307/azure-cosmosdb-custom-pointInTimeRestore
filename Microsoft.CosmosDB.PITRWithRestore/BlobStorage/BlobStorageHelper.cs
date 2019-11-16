@@ -172,7 +172,7 @@ namespace Microsoft.CosmosDB.PITRWithRestore.BlobStorage
                     }
                 }
             }
-
+            
             return containerNames;
         }
 

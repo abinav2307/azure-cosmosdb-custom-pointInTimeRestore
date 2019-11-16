@@ -2,16 +2,17 @@
 {
     using System;
     using System.Configuration;
+    using System.Threading;
     using Microsoft.Azure.Documents.Client;
     using Microsoft.CosmosDB.PITRWithRestore.Backup;
     using Microsoft.CosmosDB.PITRWithRestore.Restore;
+    using Microsoft.CosmosDB.PITRWithRestore.CosmosDB;
 
     public class Program
     {
         public static void Main(string[] args)
         {
-            string hostName = string.Concat("Host-", Guid.NewGuid().ToString());
-
+            string hostName = string.Concat("Newest-Host-", Guid.NewGuid().ToString());
             if (string.IsNullOrEmpty(ConfigurationManager.AppSettings["ModeOfOperation"]))
             {
                 Console.WriteLine("Mode of operation [Backup/Restore] must be specified in configuration file. Please retry after setting mode of operation.");

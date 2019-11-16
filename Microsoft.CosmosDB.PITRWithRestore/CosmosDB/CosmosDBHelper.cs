@@ -7,8 +7,9 @@ namespace Microsoft.CosmosDB.PITRWithRestore.CosmosDB
     using System.Threading;
     using System.Threading.Tasks;
 
-    using Microsoft.Azure.Documents.Client;
     using Microsoft.Azure.Documents;
+    using Microsoft.Azure.Documents.Client;
+    using Microsoft.Azure.Documents.Linq;
 
     using Microsoft.CosmosDB.PITRWithRestore.Logger;
 
@@ -281,7 +282,7 @@ namespace Microsoft.CosmosDB.PITRWithRestore.CosmosDB
                 // Retry when rate limited for as many times as specified
                 if ((int)ex.StatusCode == 429)
                 {
-                    logger.WriteMessage(string.Format("{0} - Received rate limiting exception when attempting to upsert document. Retrying", activityId));
+                    logger.WriteMessage(string.Format("{0} - Received rate limiting exception when attempting to upsert document at: {1}. Retrying", activityId, documentsFeedLink));
 
                     // If the write is rate limited, wait for twice the recommended wait time specified in the exception
                     int sleepTime = (int)ex.RetryAfter.TotalMilliseconds * 2;
@@ -616,6 +617,132 @@ namespace Microsoft.CosmosDB.PITRWithRestore.CosmosDB
                 else
 
                     throw;
+            }
+        }
+
+        /// <summary>
+        /// Executes the input query and returns the results as a List<Document>
+        /// </summary>
+        /// <param name="client">DocumentClient instance to interact with Azure Cosmos DB Service</param>
+        /// <param name="databaseName">Database name of the collection containing the document to read</param>
+        /// <param name="collectionName">Collection name containing the document</param>
+        /// <param name="queryString"></param>
+        /// <param name="maxRetriesOnDocumentClientExceptions">Maximum number of retries when rate limited</param>
+        /// <param name="activityId">ActivityId for this job - Backup/Restore for logging purposes</param>
+        /// <param name="logger">Logger instance</param>
+        /// <returns></returns>
+        public static async Task<List<Document>> QueryDocuments(
+            DocumentClient client,
+            string databaseName,
+            string collectionName,
+            string queryString,
+            int maxRetriesOnDocumentClientExceptions,
+            string activityId,
+            ILogger logger)
+        {
+            string collectionLink = UriFactory.CreateDocumentCollectionUri(databaseName, collectionName).ToString();
+            List<Document> documentsInQueryResult = new List<Document>();
+
+            int numRetries = 0;
+
+            try
+            {
+                var query = client.CreateDocumentQuery<Document>(collectionLink,
+                queryString,
+                new FeedOptions()
+                {
+                    MaxDegreeOfParallelism = -1,
+                    MaxItemCount = -1,
+                    EnableCrossPartitionQuery = true
+                }).AsDocumentQuery();
+                while (query.HasMoreResults)
+                {
+                    var result = await query.ExecuteNextAsync();
+                    foreach (Document eachDocument in result)
+                    {
+                        documentsInQueryResult.Add(eachDocument);
+                    }
+                }
+
+                return documentsInQueryResult;
+            }
+            catch (DocumentClientException dce)
+            {
+                // Retry when rate limited for as many times as specified
+                if ((int)dce.StatusCode == 429)
+                {
+                    logger.WriteMessage(
+                        string.Format(
+                            "{0} - Received rate limiting exception when attempting to create document. Retrying",
+                            activityId));
+
+                    // If the query is rate limited, wait for twice the recommended wait time specified in the exception
+                    int sleepTime = (int)dce.RetryAfter.TotalMilliseconds * 2;
+
+                    bool success = false;
+                    while (!success && numRetries <= maxRetriesOnDocumentClientExceptions)
+                    {
+                        // Sleep for twice the recommended amount from the Cosmos DB rate limiting exception
+                        Thread.Sleep(sleepTime);
+
+                        try
+                        {
+                            var query = client.CreateDocumentQuery<Document>(collectionLink,
+                            queryString,
+                            new FeedOptions()
+                            {
+                                MaxDegreeOfParallelism = -1,
+                                MaxItemCount = -1,
+                                EnableCrossPartitionQuery = true
+                            }).AsDocumentQuery();
+                            while (query.HasMoreResults)
+                            {
+                                var result = await query.ExecuteNextAsync();
+                                foreach (Document eachDocument in result)
+                                {
+                                    documentsInQueryResult.Add(eachDocument);
+                                }
+                            }
+                            success = true;                            
+                        }
+                        catch (DocumentClientException e)
+                        {
+                            if ((int)e.StatusCode == 429)
+                            {
+                                logger.WriteMessage(
+                                    string.Format(
+                                        "{0} - Still rate limited when attempting to create document. Retrying",
+                                        activityId));
+
+                                sleepTime = (int)e.RetryAfter.TotalMilliseconds * 2;
+                            }
+
+                            numRetries++;
+                        }
+                        catch (Exception exception)
+                        {
+                            logger.WriteMessage(
+                                string.Format(
+                                    "{0} - Caught Exception when retrying to create document. Exception was: {1}",
+                                    activityId,
+                                    exception.Message));
+
+                            numRetries++;
+                        }
+                    }                    
+                }
+
+                return documentsInQueryResult;
+            }
+            catch (Exception e)
+            {
+                logger.WriteMessage(
+                    string.Format(
+                        "{0} - Caught Exception when retrying to create document. Exception was: {1}",
+                        activityId,
+                        e.Message));
+
+                return documentsInQueryResult;
             }
         }
     }

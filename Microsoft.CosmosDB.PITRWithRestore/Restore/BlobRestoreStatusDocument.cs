@@ -13,6 +13,12 @@ namespace Microsoft.CosmosDB.PITRWithRestore.Restore
         public string ContainerName { get; set; }
 
         /// <summary>
+        /// Name of this host machine performing the restore operation
+        /// </summary>
+        [JsonProperty(PropertyName = "restoreHostName")]
+        public string RestoreHostName { get; set; }
+
+        /// <summary>
         /// id of the document once it is persisted in Cosmos DB
         /// </summary>
         [JsonProperty(PropertyName = "id")]
@@ -31,10 +37,16 @@ namespace Microsoft.CosmosDB.PITRWithRestore.Restore
         public string DocumentType { get; set; }
 
         /// <summary>
-        /// Number of documents restored for the container
+        /// Status of the restore operation
         /// </summary>
-        [JsonProperty(PropertyName = "documentCount")]
-        public long DocumentCount { get; set; }
+        [JsonProperty(PropertyName = "status")]
+        public string Status { get; set; }
+
+        /// <summary>
+        /// Number of backup blobs successfully restored for the container
+        /// </summary>
+        [JsonProperty(PropertyName = "successfullyRestoredBlobCount")]
+        public long SuccessfullyRestoredBlobCount { get; set; }
 
         /// <summary>
         /// The exception message for the failure

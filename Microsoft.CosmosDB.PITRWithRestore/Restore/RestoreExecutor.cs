@@ -16,6 +16,7 @@ namespace Microsoft.CosmosDB.PITRWithRestore.Restore
     using Newtonsoft.Json.Linq;
 
     using System;
+    using System.Linq;
     using System.Collections.Concurrent;
     using System.Collections.Generic;
     using System.Configuration;
@@ -72,9 +73,9 @@ namespace Microsoft.CosmosDB.PITRWithRestore.Restore
         private static readonly DateTime epoch = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc);
 
         /// <summary>
-        /// Mapping of restored document count per blob container
+        /// Mapping of blobs successfully restored per blob container
         /// </summary>
-        private ConcurrentDictionary<string, int> ContainerToDocCountRestoredMapper;
+        private ConcurrentDictionary<string, int> ContainerToBlobCountRestoredMapper;
 
         /// <summary>
         /// List of Blob Containers to be restored
@@ -112,6 +113,31 @@ namespace Microsoft.CosmosDB.PITRWithRestore.Restore
         private string DocumentsFeedLink;
 
         /// <summary>
+        /// Name of the database with the container storing successes, failures and leases for the Restore job
+        /// </summary>
+        private string RestoreStatusDatabaseName;
+
+        /// <summary>
+        /// Name of the container storing successes, failures and leases for the Restore job
+        /// </summary>
+        private string RestoreStatusContainerName;
+
+        /// <summary>
+        /// Name of the database into which the backups will be restored
+        /// </summary>
+        private string RestoreDatabaseName;
+
+        /// <summary>
+        /// Name of the container into which the backups will be restored
+        /// </summary>
+        private string RestoreContainerName;
+
+        /// <summary>
+        /// The field representing the partition key for the documents to be restored
+        /// </summary>
+        private string RestoreContainerPartitionKey;
+
+        /// <summary>
         /// Documents feed link for the Restore Status Container
         /// </summary>
         private string RestoreStatusDocumentsFeedLink;
@@ -122,7 +148,7 @@ namespace Microsoft.CosmosDB.PITRWithRestore.Restore
             this.HostName = hostName;
             this.ContainersToRestore = new List<string>();
             this.ContainersToRestoreInParallel = new List<string>();
-            this.ContainerToDocCountRestoredMapper = new ConcurrentDictionary<string, int>();
+            this.ContainerToBlobCountRestoredMapper = new ConcurrentDictionary<string, int>();
             this.CompletedRestoringFromBlobContainers = false;
 
             if (bool.Parse(ConfigurationManager.AppSettings["PushLogsToLogAnalytics"]))
@@ -141,7 +167,7 @@ namespace Microsoft.CosmosDB.PITRWithRestore.Restore
             // in an environment variable on the machine running the application called storageconnectionstring.
             // If the environment variable is created after the application is launched in a console or with Visual
             // Studio, the shell or application needs to be closed and reloaded to take the environment variable into account.
-            string storageConnectionString = ConfigurationManager.AppSettings["blobStorageConnectionString"];
+            string storageConnectionString = ConfigurationManager.AppSettings["BlobStorageConnectionString"];
 
             // Verify the Blob Storage Connection String
             if (CloudStorageAccount.TryParse(storageConnectionString, out this.StorageAccount))
@@ -170,38 +196,40 @@ namespace Microsoft.CosmosDB.PITRWithRestore.Restore
         /// </summary>
         private void CreateContainersForRestore()
         {
-            // 1. Create the Restore container
-            string restoreDatabaseName = ConfigurationManager.AppSettings["RestoreDatabaseName"];
-            string restoreContainerName = ConfigurationManager.AppSettings["RestoreContainerName"];
+            // 1. Create the container into which the backups will be restored
+            this.RestoreDatabaseName = ConfigurationManager.AppSettings["RestoreDatabaseName"];
+            this.RestoreContainerName = ConfigurationManager.AppSettings["RestoreContainerName"];
             int restoreContainerThroughput = int.Parse(ConfigurationManager.AppSettings["RestoreContainerThroughput"]);
             string restoreContainerPartitionKey = ConfigurationManager.AppSettings["RestoreContainerPartitionKey"];
+            this.RestoreContainerPartitionKey = restoreContainerPartitionKey.Substring(1);
+
             CosmosDBHelper.CreateCollectionIfNotExistsAsync(
                 this.DocumentClient,
-                restoreDatabaseName,
-                restoreContainerName,
+                this.RestoreDatabaseName,
+                this.RestoreContainerName,
                 restoreContainerThroughput,
                 restoreContainerPartitionKey,
                 this.Logger,
                 false).Wait();
 
-            this.DocumentsFeedLink = UriFactory.CreateDocumentCollectionUri(restoreDatabaseName, restoreContainerName).ToString();
+            this.DocumentsFeedLink = UriFactory.CreateDocumentCollectionUri(this.RestoreDatabaseName, this.RestoreContainerName).ToString();
 
-            // 2. Create the Restore Status container tracking success, failures and leases for the restore
-            string restoreStatusDatabaseName = ConfigurationManager.AppSettings["RestoreStatusDatabaseName"];
-            string restoreStatusContainerName = ConfigurationManager.AppSettings["RestoreStatusContainerName"];
+            // 2. Create the container tracking successes, failures and leases for the restore process
+            this.RestoreStatusDatabaseName = ConfigurationManager.AppSettings["RestoreStatusDatabaseName"];
+            this.RestoreStatusContainerName = ConfigurationManager.AppSettings["RestoreStatusContainerName"];
             int restoreStatusContainerThroughput = int.Parse(ConfigurationManager.AppSettings["RestoreStatusContainerThroughput"]);
             string restoreStatusContainerPartitionKey = ConfigurationManager.AppSettings["RestoreStatusContainerPartitionKey"];
             CosmosDBHelper.CreateCollectionIfNotExistsAsync(
                 this.DocumentClient,
-                restoreStatusDatabaseName,
-                restoreStatusContainerName,
+                this.RestoreStatusDatabaseName,
+                this.RestoreStatusContainerName,
                 restoreStatusContainerThroughput,
                 restoreStatusContainerPartitionKey,
                 this.Logger,
                 false).Wait();
 
             this.RestoreStatusDocumentsFeedLink =
-                UriFactory.CreateDocumentCollectionUri(restoreStatusDatabaseName, restoreStatusContainerName).ToString();
+                UriFactory.CreateDocumentCollectionUri(this.RestoreStatusDatabaseName, this.RestoreStatusContainerName).ToString();
         }
 
         /// <summary>
@@ -270,10 +298,211 @@ namespace Microsoft.CosmosDB.PITRWithRestore.Restore
             }
         }
 
+        /// <summary>
+        /// Restores the previously backed up documents from the Blob Storage Account
+        /// </summary>
+        /// <returns></returns>
+        public async Task ExecuteRestore()
+        {
+            // Fetch the list of backup containers from the Blob Storage account to be restored
+            this.ContainersToRestore = BlobStorageHelper.GetListOfContainersInStorageAccount(this.CloudBlobClient);
+
+            // Determine the list of backup containers yet to complete restoration
+            long countOfBackupContainersUnfinished = await this.GetCountOfBackupContainersUnfinished();
+            do
+            {
+                this.ContainersToRestoreInParallel = new List<string>();
+
+                // Retrieve the count of successfully restored blobs in each backup container
+                foreach (string eachContainerToRestore in this.ContainersToRestore)
+                {
+                    int countOfRestoredBlobsInContainer = await this.GetCountOfBlobsPreviouslyRestoredForContainer(eachContainerToRestore);
+                    this.ContainerToBlobCountRestoredMapper[eachContainerToRestore] = countOfRestoredBlobsInContainer;
+                }
+
+                // Fetch the max number of containers to be restored by a single client
+                int maxContainersToRestore = int.Parse(ConfigurationManager.AppSettings["MaxContainersToRestorePerWorker"]);
+
+                do
+                {
+                    // Delete all leases that are more than 5 minutes old
+                    // (Since we update the count of successful restores every minute, any lease that is over 5 minutes old is due to machine failure)
+                    await this.DeleteExpiredLeasesOnBackupContainersToBeRestored();
+
+                    int numAttempts = 0;
+                    while (this.NumberOfBlobContainerLeasesAcquired < this.ContainersToRestore.Count &&
+                           numAttempts < this.MaxRetriesOnDocumentClientExceptions)
+                    {
+                        string containerToRestore = await this.GetNextContainerToRestore(this.ContainersToRestore);
+                        if (!string.IsNullOrEmpty(containerToRestore))
+                        {
+                            numAttempts = 0;
+                            this.ContainersToRestoreInParallel.Add(containerToRestore);
+                            this.ContainerToBlobCountRestoredMapper[containerToRestore] = 0;
+
+                            if (maxContainersToRestore != -1 && this.ContainersToRestoreInParallel.Count >= maxContainersToRestore)
+                            {
+                                break;
+                            }
+                        }
+                        else
+                        {
+                            numAttempts++;
+                            this.Logger.WriteMessage(string.Format("Current count of acquired leases = {0}. Sleeping for 5 seconds", this.NumberOfBlobContainerLeasesAcquired));
+                            Thread.Sleep(5 * 1000);
+                        }
+                    }
+
+                    countOfBackupContainersUnfinished = await this.GetCountOfBackupContainersUnfinished();
+
+                } while (this.ContainersToRestoreInParallel.Count == 0 && countOfBackupContainersUnfinished > 0);
+
+                Task producerTask = Task.Run(() => this.RestoreDocuments());
+                Task consumerTask = Task.Run(() => this.UpdateSuccessfullyRestoredDocumentCount(true));
+
+                await Task.WhenAll(producerTask, consumerTask);
+
+                // Update the status to "Completed" for all the containers being restored by this machine
+                foreach (string containerToRestore in this.ContainersToRestoreInParallel)
+                {
+                    await this.WriteStatusOfRestoreToCosmosDB(containerToRestore, "Completed");
+                }
+
+                countOfBackupContainersUnfinished = await this.GetCountOfBackupContainersUnfinished();
+
+            } while (countOfBackupContainersUnfinished > 0);
+        }
+
+        /// <summary>
+        /// Retrieves the list of backup containers that are still being restored
+        /// 
+        /// If the restore job is running for the first time, this method returns the number of containers 
+        /// retrieved from the Blob Storage account containing the backups
+        /// </summary>
+        /// <returns></returns>
+        private async Task<long> GetCountOfBackupContainersUnfinished()
+        {
+            int countOfBackupContainersUnfinished = 0;
+            string queryString = string.Format("select * from c where c.documentType = 'Restore Helper'");
+
+            List<Document> previouslySucceededRestoresForContainer = await CosmosDBHelper.QueryDocuments(
+                this.DocumentClient,
+                this.RestoreStatusDatabaseName,
+                this.RestoreStatusContainerName,
+                queryString,
+                this.MaxRetriesOnDocumentClientExceptions,
+                this.GuidForLogAnalytics,
+                this.Logger);
+
+            if (previouslySucceededRestoresForContainer.Count == 0)
+            {
+                countOfBackupContainersUnfinished = this.ContainersToRestore.Count;
+            }
+            else
+            {
+                queryString = string.Format("select * from c where c.documentType = 'Restore Helper' and c.status != 'Completed'");
+
+                previouslySucceededRestoresForContainer = await CosmosDBHelper.QueryDocuments(
+                    this.DocumentClient,
+                    this.RestoreStatusDatabaseName,
+                    this.RestoreStatusContainerName,
+                    queryString,
+                    this.MaxRetriesOnDocumentClientExceptions,
+                    this.GuidForLogAnalytics,
+                    this.Logger);
+
+                foreach (Document eachDocument in previouslySucceededRestoresForContainer)
+                {
+                    countOfBackupContainersUnfinished++;
+                }
+            }
+
+            return countOfBackupContainersUnfinished;
+        }
+
+        /// <summary>
+        /// Deletes all expired leases on containers yet to be fully restored
+        /// (most likely due to machines dying or restarting)
+        /// </summary>
+        private async Task DeleteExpiredLeasesOnBackupContainersToBeRestored()
+        {
+            // Calculate the epoch time as of 3 minutes prior to current execution.
+            // All leases older than the calculated time should be treated as expired leases to be deleted and eligible for renewal
+            TimeSpan t = DateTime.UtcNow.AddMinutes(-2) - new DateTime(1970, 1, 1);
+            int secondsSinceEpochForExpiredLeases = (int)t.TotalSeconds;
+
+            string queryStringForExpiredRestoreLeases =
+                string.Format("select * from c where c.documentType = 'Restore Helper' and c.status in ('In Progress', 'Initializing') and c._ts <= {0}", secondsSinceEpochForExpiredLeases);
+
+            List<Document> containersWithExpiredLeasesForRestore =
+                await CosmosDBHelper.QueryDocuments(
+                    this.DocumentClient,
+                    this.RestoreStatusDatabaseName,
+                    this.RestoreStatusContainerName,
+                    queryStringForExpiredRestoreLeases,
+                    this.MaxRetriesOnDocumentClientExceptions,
+                    this.GuidForLogAnalytics,
+                    this.Logger);
+
+            // Delete each document with an expired lease
+            foreach (Document eachDocumentWithAnExpiredRestoreLease in containersWithExpiredLeasesForRestore)
+            {
+                string restoreStatusPartitionKeyProperty = ConfigurationManager.AppSettings["RestoreStatusContainerPartitionKey"];
+                if (restoreStatusPartitionKeyProperty[0] == '/')
+                {
+                    restoreStatusPartitionKeyProperty = restoreStatusPartitionKeyProperty.Remove(0, 1);
+                }
+
+                string partitionKey = eachDocumentWithAnExpiredRestoreLease.GetPropertyValue<string>(restoreStatusPartitionKeyProperty);
+
+                string id = eachDocumentWithAnExpiredRestoreLease.GetPropertyValue<string>("id");
+
+                await CosmosDBHelper.DeleteDocmentAsync(
+                    this.DocumentClient,
+                    this.RestoreStatusDatabaseName,
+                    this.RestoreStatusContainerName,
+                    partitionKey,
+                    id,
+                    this.MaxRetriesOnDocumentClientExceptions,
+                    this.GuidForLogAnalytics,
+                    this.Logger);
+
+                this.Logger.WriteMessage(string.Format("Sev 3: Removed expired lease on backup container document with partition key: {0} and id: {1}", partitionKey, id));
+            }
+
+            // Number of containers in the Blob Storage account with leases acquired
+            this.NumberOfBlobContainerLeasesAcquired = await this.GetDocumentCountInBlobStorageLeaseCollection();
+        }
+
+        /// <summary>
+        /// Updates the count of restored document for each blob storage container
+        /// </summary>
+        /// <param name="populateMetricsDuringRestore"></param>
+        /// <returns></returns>
+        private async Task UpdateSuccessfullyRestoredDocumentCount(bool populateMetricsDuringRestore)
+        {
+            while (!this.CompletedRestoringFromBlobContainers && populateMetricsDuringRestore)
+            {
+                Thread.Sleep(60 * 1000);
+
+                foreach (string containerToRestore in this.ContainersToRestoreInParallel)
+                {
+                    await this.WriteStatusOfRestoreToCosmosDB(containerToRestore, "In Progress");
+                }
+            }
+        }
+
         private async Task RestoreDocuments()
         {
             Stopwatch totalExecutionTime = new Stopwatch();
             totalExecutionTime.Start();
+
+            int maxDegreeOfParallelism = int.Parse(ConfigurationManager.AppSettings["DegreeOfParallelism"]);
+            bool workloadHasUpdates = bool.Parse(ConfigurationManager.AppSettings["HasUpdates"]);
+            if (workloadHasUpdates)
+            {
+                maxDegreeOfParallelism = 1;
+            }
 
             Parallel.ForEach(this.ContainersToRestoreInParallel, new ParallelOptions { MaxDegreeOfParallelism = 1 }, async (eachContainerToRestoreInParallel) =>
             {
@@ -297,8 +526,6 @@ namespace Microsoft.CosmosDB.PITRWithRestore.Restore
                         listOfBlobsToRestore.Count,
                         eachContainerToRestoreInParallel,
                         containerContentStopWatch.ElapsedMilliseconds / 1000));
-
-                int maxDegreeOfParallelism = int.Parse(ConfigurationManager.AppSettings["DegreeOfParallelism"]);
 
                 Parallel.ForEach(listOfBlobsToRestore, new ParallelOptions { MaxDegreeOfParallelism = maxDegreeOfParallelism }, async (blobFileToRestore) =>
                 {
@@ -332,7 +559,7 @@ namespace Microsoft.CosmosDB.PITRWithRestore.Restore
                     // If the Blob was successfully restored, update the success/failure tracking collection with the name of the restored Blob
                     if (documentsFailedToRestore.Count == 0)
                     {
-                        this.ContainerToDocCountRestoredMapper[eachContainerToRestoreInParallel] += jArray.Count;
+                        this.ContainerToBlobCountRestoredMapper[eachContainerToRestoreInParallel]++;
                     }
                     else
                     {
@@ -354,6 +581,9 @@ namespace Microsoft.CosmosDB.PITRWithRestore.Restore
                     }
                 });
             });
+
+            this.CompletedRestoringFromBlobContainers = true;
+            this.Logger.WriteMessage("Set completed status to true");
         }
 
         /// <summary>
@@ -366,19 +596,31 @@ namespace Microsoft.CosmosDB.PITRWithRestore.Restore
         {
             try
             {
-                BlobRestoreStatusDocument blobRestoreSuccessDocument = new BlobRestoreStatusDocument();
-                blobRestoreSuccessDocument.ContainerName = containerName;
-                blobRestoreSuccessDocument.DocumentType = status;
-                blobRestoreSuccessDocument.Id = string.Concat(containerName);
-                blobRestoreSuccessDocument.DocumentCount = this.ContainerToDocCountRestoredMapper[containerName];
-
-                await CosmosDBHelper.UpsertDocumentAsync(
+                ResourceResponse<Document> blobRestoreStatusDocument = await CosmosDBHelper.ReadDocmentAsync(
                     this.DocumentClient,
-                    this.RestoreStatusDocumentsFeedLink,
-                    blobRestoreSuccessDocument,
+                    this.RestoreStatusDatabaseName,
+                    this.RestoreStatusContainerName,
+                    containerName,
+                    containerName,
                     this.MaxRetriesOnDocumentClientExceptions,
                     this.GuidForLogAnalytics,
                     this.Logger);
+
+                if (blobRestoreStatusDocument != null)
+                {
+                    blobRestoreStatusDocument.Resource.SetPropertyValue("successfullyRestoredBlobCount", this.ContainerToBlobCountRestoredMapper[containerName]);
+                    blobRestoreStatusDocument.Resource.SetPropertyValue("status", status);
+
+                    this.Logger.WriteMessage(string.Format("Blob restore status document is: {0}", blobRestoreStatusDocument.Resource.ToString()));
+
+                    await CosmosDBHelper.UpsertDocumentAsync(
+                        this.DocumentClient,
+                        this.RestoreStatusDocumentsFeedLink,
+                        blobRestoreStatusDocument.Resource,
+                        this.MaxRetriesOnDocumentClientExceptions,
+                        this.GuidForLogAnalytics,
+                        this.Logger);
+                }
             }
             catch (Exception ex)
             {
@@ -389,69 +631,9 @@ namespace Microsoft.CosmosDB.PITRWithRestore.Restore
         }
 
         /// <summary>
-        /// Updates the count of restored document for each blob storage container
-        /// </summary>
-        /// <param name="populateMetricsDuringRestore"></param>
-        /// <returns></returns>
-        private async Task UpdateSuccessfullyRestoredDocumentCount(bool populateMetricsDuringRestore)
-        {
-            while (!this.CompletedRestoringFromBlobContainers && populateMetricsDuringRestore)
-            {
-                Thread.Sleep(60 * 1000);
-
-                foreach (string containerToRestore in this.ContainersToRestoreInParallel)
-                {
-                    await this.WriteStatusOfRestoreToCosmosDB(containerToRestore, "In Progress");
-                }
-            }
-        }
-
-        /// <summary>
-        /// Restores the previously backed up documents from the Blob Storage Account
-        /// </summary>
-        /// <returns></returns>
-        public async Task ExecuteRestore()
-        {
-            this.ContainersToRestore = BlobStorageHelper.GetListOfContainersInStorageAccount(this.CloudBlobClient);
-            int numberOfContainersToRestore = int.Parse(ConfigurationManager.AppSettings["MaxContainersToRestorePerWorker"]);
-
-            int numAttempts = 0;
-            while (this.NumberOfBlobContainerLeasesAcquired < this.ContainersToRestore.Count &&
-                   numAttempts < this.MaxRetriesOnDocumentClientExceptions)
-            {
-                string containerToRestore = await this.GetNextContainerToRestore(this.ContainersToRestore);
-                if (!string.IsNullOrEmpty(containerToRestore))
-                {
-                    this.ContainersToRestoreInParallel.Add(containerToRestore);
-                    this.ContainerToDocCountRestoredMapper[containerToRestore] = 0;
-
-                    if (numberOfContainersToRestore != -1 && this.ContainersToRestoreInParallel.Count >= numberOfContainersToRestore)
-                    {
-                        break;
-                    }
-                }
-                else
-                {
-                    numAttempts++;
-                }
-            }
-
-            Task producerTask = Task.Run(() => this.RestoreDocuments());
-            Task consumerTask = Task.Run(() => this.UpdateSuccessfullyRestoredDocumentCount(true));
-
-            await Task.WhenAll(producerTask, consumerTask);
-
-            // Update the status to completed for all the containers being restored by this machine
-            foreach (string containerToRestore in this.ContainersToRestoreInParallel)
-            {
-                await this.WriteStatusOfRestoreToCosmosDB(containerToRestore, "Completed");
-            }
-        }
-
-        /// <summary>
         /// Once again attempt to backup failed backups for the container being restored
         /// </summary>
-        /// <param name="containerToRestore">Name of the Blob Storage container containiner the backups to be restored</param>
+        /// <param name="containerToRestore">Name of the Blob Storage container containing the backups to be restored</param>
         /// <returns></returns>
         private async Task BackupFailedBackups(string containerToRestore)
         {
@@ -462,7 +644,7 @@ namespace Microsoft.CosmosDB.PITRWithRestore.Restore
             string backupFailureContainerName = ConfigurationManager.AppSettings["BackupStatusContainerName"];
 
             string queryToExecute = string.Format(
-                "select * from c where c.containerName = '{0}' and c.documentType = 'Failure'", 
+                "select * from c where c.containerName = '{0}' and c.documentType = 'Failure'",
                 containerToRestore);
 
             string collectionLink = UriFactory.CreateDocumentCollectionUri(
@@ -567,13 +749,10 @@ namespace Microsoft.CosmosDB.PITRWithRestore.Restore
         /// <returns></returns>
         private async Task<long> GetDocumentCountInBlobStorageLeaseCollection()
         {
-            string restoreStatusDatabaseName = ConfigurationManager.AppSettings["RestoreStatusDatabaseName"];
-            string restoreStatusContainerName = ConfigurationManager.AppSettings["RestoreStatusContainerName"];
             long documentCount = 0;
 
             string queryToExecute = string.Format("select * from c where c.documentType = 'Restore Helper'");
-            string collectionLink =
-                UriFactory.CreateDocumentCollectionUri(restoreStatusDatabaseName, restoreStatusContainerName).ToString();
+            string collectionLink = this.RestoreStatusDocumentsFeedLink;
             try
             {
                 var query = this.DocumentClient.CreateDocumentQuery<Document>(collectionLink,
@@ -637,8 +816,8 @@ namespace Microsoft.CosmosDB.PITRWithRestore.Restore
         }
 
         /// <summary>
-        /// Restore each JObject in the input JArray into the specified Cosmos DB collection
-        /// and store the documents that were not successfully restored into a collection tracking restore failures
+        /// Restore each JObject in the input JArray into the specified Cosmos DB container
+        /// and store the documents that were not successfully restored into the container tracking restore failures
         /// </summary>
         /// <param name="jArray"></param>
         /// <returns></returns>
@@ -648,10 +827,6 @@ namespace Microsoft.CosmosDB.PITRWithRestore.Restore
             List<JObject> documentsFailedToRestore,
             List<Exception> exceptionsCausingFailure)
         {
-            string restoreDatabaseName = ConfigurationManager.AppSettings["RestoreDatabaseName"];
-            string restoreCollectionName = ConfigurationManager.AppSettings["RestoreCollectionName"];
-            Uri documentsFeedLink = UriFactory.CreateDocumentCollectionUri(restoreDatabaseName, restoreCollectionName);
-
             foreach (JObject eachJObject in jArray)
             {
                 Exception exToLog = null;
@@ -660,25 +835,56 @@ namespace Microsoft.CosmosDB.PITRWithRestore.Restore
                 {
                     try
                     {
-                        bool isUpsertSuccessful = await CosmosDBHelper.UpsertDocumentAsync(
-                            this.DocumentClient,
-                            this.DocumentsFeedLink,
-                            eachJObject,
-                            this.MaxRetriesOnDocumentClientExceptions,
-                            activityIdForBlobRestore,
-                            this.Logger,
-                            exToLog);
-
-                        if (!isUpsertSuccessful)
+                        if (!IsDelete(eachJObject))
                         {
-                            documentsFailedToRestore.Add(eachJObject);
-                            exceptionsCausingFailure.Add(exToLog);
+                            eachJObject.Remove("_metadata");
 
-                            this.Logger.WriteMessage(
-                               string.Format(
-                                   "Sev 1: ActivityId - {0} - Document could not be restored.",
-                                   activityIdForBlobRestore));
+                            bool isUpsertSuccessful = await CosmosDBHelper.UpsertDocumentAsync(
+                                this.DocumentClient,
+                                this.DocumentsFeedLink,
+                                eachJObject,
+                                this.MaxRetriesOnDocumentClientExceptions,
+                                activityIdForBlobRestore,
+                                this.Logger,
+                                exToLog);
+
+                            if (!isUpsertSuccessful)
+                            {
+                                documentsFailedToRestore.Add(eachJObject);
+                                exceptionsCausingFailure.Add(exToLog);
+
+                                this.Logger.WriteMessage(
+                                   string.Format(
+                                       "Sev 1: ActivityId - {0} - Document could not be restored.",
+                                       activityIdForBlobRestore));
+                            }
                         }
+                        else
+                        {
+                            JObject objectToDelete = GetPreviousImage(eachJObject);
+
+                            bool isDeleteSuccessful = await CosmosDBHelper.DeleteDocmentAsync(
+                                this.DocumentClient,
+                                this.RestoreDatabaseName,
+                                this.RestoreContainerName,
+                                (string)eachJObject[this.RestoreContainerPartitionKey],
+                                (string)eachJObject["id"],
+                                this.MaxRetriesOnDocumentClientExceptions,
+                                activityIdForBlobRestore,
+                                this.Logger);
+
+                            if (!isDeleteSuccessful)
+                            {
+                                documentsFailedToRestore.Add(eachJObject);
+                                exceptionsCausingFailure.Add(exToLog);
+
+                                this.Logger.WriteMessage(
+                                   string.Format(
+                                       "Sev 1: ActivityId - {0} - Document could not be restored.",
+                                       activityIdForBlobRestore));
+                            }
+                        }
+
                     }
                     catch (Exception e)
                     {
@@ -711,18 +917,73 @@ namespace Microsoft.CosmosDB.PITRWithRestore.Restore
         }
 
         /// <summary>
+        /// In the case of a backup containing a deleted document, the current version will not exist
+        /// Thus, the document to be deleted must be fetched from the "previousImage" object 
+        /// embedded within the "_metadata" component of the archived JObject
+        /// </summary>
+        /// <param name="jObject">JObject representing the archived backup</param>
+        /// <returns></returns>
+        private JObject GetPreviousImage(JObject jObject)
+        {
+            JObject previousImage = null;
+
+            if (jObject.GetValue("_metadata") != null)
+            {
+                JObject metadata = JObject.FromObject(jObject.GetValue("_metadata"));
+                if (metadata.GetValue("previousImage") != null)
+                {
+                    previousImage = JObject.FromObject(metadata.GetValue("previousImage"));
+                }
+            }
+
+            return previousImage;
+        }
+
+        /// <summary>
+        /// If OpLog is used during the backup process, deletes will also be captured
+        /// This method looks into the "metadata" of the backup to determine if the backup corresponds to a delete operation
+        /// </summary>
+        /// <param name="jObject">Each JObject archived during the backup process</param>
+        /// <returns></returns>
+        private bool IsDelete(JObject jObject)
+        {
+            bool isDelete = false;
+
+            if (jObject.GetValue("_metadata") != null)
+            {
+                JObject metadata = JObject.FromObject(jObject.GetValue("_metadata"));
+                if (metadata.GetValue("operationType") != null)
+                {
+                    if (metadata.GetValue("operationType").Equals("delete"))
+                    {
+                        isDelete = true;
+                    }
+                }
+            }
+
+            return isDelete;
+        }
+
+        /// <summary>
         /// Determines if the previously backed up document, is in the time window specified by the user for a restore
         /// </summary>
-        /// <param name="jObject">JSON document previously backed up to Blob Store using Change Feed Processor</param>
+        /// <param name="jObject">JSON document previously backed up to Blob Storage</param>
         /// <returns></returns>
         private bool VerifyTimeRangeForDocumentRestore(JObject jObject)
         {
             bool isDocumentInRestoreWindow = false;
 
-            // Convert the _ts property of the document to restore, to a timestamp
-            DateTime timestampInDocument = epoch.AddSeconds((long)jObject["_ts"]);
+            if (jObject.GetValue("_ts") != null)
+            {
+                // Convert the _ts property of the document to restore, to a timestamp
+                DateTime timestampInDocument = epoch.AddSeconds((long)jObject["_ts"]);
 
-            if (DateTime.Compare(timestampInDocument, this.StartTimeForRestore) >= 0 && DateTime.Compare(timestampInDocument, this.EndTimeForRestore) <= 0)
+                if (DateTime.Compare(timestampInDocument, this.StartTimeForRestore) >= 0 && DateTime.Compare(timestampInDocument, this.EndTimeForRestore) <= 0)
+                {
+                    isDocumentInRestoreWindow = true;
+                }
+            }
+            else
             {
                 isDocumentInRestoreWindow = true;
             }
@@ -731,7 +992,7 @@ namespace Microsoft.CosmosDB.PITRWithRestore.Restore
         }
 
         /// <summary>
-        /// Update the collection tracking blobs which were NOT successfully restored
+        /// Update the container tracking blobs which were NOT successfully restored
         /// by creating a document containing the names of the blob file (and its container) which were NOT restored
         /// </summary>
         /// <param name="containerName">Blob Storage container name of the Blob that was NOT successfully restored</param>
@@ -801,8 +1062,23 @@ namespace Microsoft.CosmosDB.PITRWithRestore.Restore
         {
             List<string> blobsToRestore = new List<string>();
             CloudBlobContainer blobContainer = this.CloudBlobClient.GetContainerReference(containerName);
+            IEnumerable<IListBlobItem> enumerable = blobContainer.ListBlobs();
 
-            foreach (IListBlobItem blobItem in blobContainer.ListBlobs())
+            // Retrieve the count of blobs previously restored for this backup container
+            int countOfPreviouslyRestoredBlobsForContainer = 0;
+            if(this.ContainerToBlobCountRestoredMapper.ContainsKey(containerName))
+            {
+                countOfPreviouslyRestoredBlobsForContainer = this.ContainerToBlobCountRestoredMapper[containerName];
+                this.Logger.WriteMessage(string.Format("Found {0} blobs previously restored for this container.", countOfPreviouslyRestoredBlobsForContainer));
+            }
+
+            List<IListBlobItem> blobsToRestoreForContainer = blobContainer.ListBlobs().ToList().OrderBy(x => ((CloudBlockBlob)x).Properties.LastModified).ToList();
+            this.Logger.WriteMessage(string.Format("Retrieved {0} blobs containing backups.", blobsToRestoreForContainer.Count));
+
+            blobsToRestoreForContainer.RemoveRange(0, countOfPreviouslyRestoredBlobsForContainer);
+            this.Logger.WriteMessage(string.Format("After removing restored blobs. Blobs to restore = {0}", blobsToRestoreForContainer.Count));
+
+            foreach (IListBlobItem blobItem in blobsToRestoreForContainer)
             {
                 string blobName = ((CloudBlockBlob)blobItem).Name;
                 string[] blobNameComponents = blobName.Split('-');
@@ -827,6 +1103,33 @@ namespace Microsoft.CosmosDB.PITRWithRestore.Restore
             }
 
             return blobsToRestore;
+        }
+
+        /// <summary>
+        /// Retrieves the count of previously restored blobs containing backups for the specified container
+        /// </summary>
+        /// <param name="containerName">Blob Storage container with backups that may have been partially restored on a prior run</param>
+        /// <returns></returns>
+        private async Task<int> GetCountOfBlobsPreviouslyRestoredForContainer(string containerName)
+        {
+            int countOfPreviouslyRestoredBlobs = 0;
+            string queryString = string.Format("select * from c where c.id = '{0}' and c.documentType = 'Restore Helper'", containerName);
+
+            List<Document> previouslySucceededRestoresForContainer = await CosmosDBHelper.QueryDocuments(
+                this.DocumentClient, 
+                this.RestoreStatusDatabaseName, 
+                this.RestoreStatusContainerName, 
+                queryString, 
+                this.MaxRetriesOnDocumentClientExceptions, 
+                this.GuidForLogAnalytics, 
+                this.Logger);
+
+            foreach (Document eachDocument in previouslySucceededRestoresForContainer)
+            {
+                countOfPreviouslyRestoredBlobs += eachDocument.GetPropertyValue<int>("successfullyRestoredBlobCount");
+            }
+
+            return countOfPreviouslyRestoredBlobs;
         }
 
         /// <summary>
@@ -878,25 +1181,22 @@ namespace Microsoft.CosmosDB.PITRWithRestore.Restore
                 // If leases have been acquired for all containers in the Blob Storage account, there are no more containers to process for restore
                 if (this.NumberOfBlobContainerLeasesAcquired < numberOfContainersToRestore)
                 {
-                    string restoreStatusDatabaseName = ConfigurationManager.AppSettings["RestoreStatusDatabaseName"];
-                    string restoreHelperCollectionName = ConfigurationManager.AppSettings["RestoreHelperCollectionName"];
-                    Uri documentsFeedLink = UriFactory.CreateDocumentCollectionUri(restoreStatusDatabaseName, restoreHelperCollectionName);
-
                     foreach (string eachContainerToRestore in shuffledContainerNames)
                     {
                         if (!success)
                         {
                             // Verify the container has not already been picked up by another AppService instance
                             // by attempting to create a document in the HelperCollection
-                            RestoreContainerDocument restoreContainerDocument = new RestoreContainerDocument();
+                            BlobRestoreStatusDocument restoreContainerDocument = new BlobRestoreStatusDocument();
                             restoreContainerDocument.RestoreHostName = this.HostName;
                             restoreContainerDocument.Id = eachContainerToRestore;
                             restoreContainerDocument.ContainerName = eachContainerToRestore;
                             restoreContainerDocument.DocumentType = "Restore Helper";
+                            restoreContainerDocument.Status = "Initializing";
 
                             try
                             {
-                                await this.DocumentClient.CreateDocumentAsync(documentsFeedLink, restoreContainerDocument, null, true);
+                                await this.DocumentClient.CreateDocumentAsync(this.RestoreStatusDocumentsFeedLink, restoreContainerDocument, null, true);
                                 success = true;
                                 containerName = eachContainerToRestore;
 
@@ -912,7 +1212,7 @@ namespace Microsoft.CosmosDB.PITRWithRestore.Restore
                                 {
                                     this.Logger.WriteMessage(
                                         string.Format(
-                                            "Sev 2: ActivityId - {0} - Other exception thrown when attempting to pick up a least on a container. Status code = {1}",
+                                            "Sev 2: ActivityId - {0} - Other exception thrown when attempting to pick up a lease on a container. Status code = {1}",
                                             this.GuidForLogAnalytics,
                                             (int)ex.StatusCode));
                                 }

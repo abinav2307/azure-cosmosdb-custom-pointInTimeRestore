@@ -112,7 +112,6 @@
     <Compile Include="Observer\DocumentFeedObserverFactory.cs" />
     <Compile Include="Restore\BlobRestoreStatusDocument.cs" />
     <Compile Include="Restore\RestoreExecutor.cs" />
-    <Compile Include="Restore\RestoreContainerDocument.cs" />
   </ItemGroup>
   <ItemGroup>
     <None Include="App.config">
